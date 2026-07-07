@@ -1956,7 +1956,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 			}
 			return (INT_PTR)TRUE;
 		case IDC_WEBSITE:
-			ShellExecuteA(hDlg, "open", RUFUS_URL, NULL, NULL, SW_SHOWNORMAL);
+			ShellExecuteA(hDlg, "open", RUFUS_URL_RELEASES, NULL, NULL, SW_SHOWNORMAL);
 			break;
 		case IDC_DOWNLOAD:	// Also doubles as abort and launch function
 			switch(download_status) {

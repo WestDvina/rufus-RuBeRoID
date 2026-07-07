@@ -517,6 +517,67 @@ static void CheckForDBXUpdates(int verbose)
 }
 
 /*
+ * Extract a JSON string value by key (handles basic escape sequences).
+ * Returns a newly allocated string, or NULL on failure. Caller must free.
+ */
+static char* extract_json_string_value(const char* json, const char* key)
+{
+	char keybuf[128];
+	char *p, *end, *result;
+	size_t len;
+
+	static_sprintf(keybuf, "\"%s\": \"", key);
+	p = strstr(json, keybuf);
+	if (p == NULL)
+		return NULL;
+
+	p += safe_strlen(keybuf);
+
+	// Count unescaped length
+	len = 0;
+	end = p;
+	while (*end) {
+		if (*end == '\\') {
+			end++;
+			if (*end) { len++; end++; }
+			continue;
+		}
+		if (*end == '\"')
+			break;
+		len++;
+		end++;
+	}
+	if (*end != '\"')
+		return NULL;
+
+	result = (char*)malloc(len + 1);
+	if (result == NULL)
+		return NULL;
+
+	// Unescape
+	len = 0;
+	while (*p && *p != '\"') {
+		if (*p == '\\') {
+			p++;
+			switch (*p) {
+			case 'n': result[len++] = '\n'; break;
+			case 'r': result[len++] = '\r'; break;
+			case 't': result[len++] = '\t'; break;
+			case '\"': result[len++] = '\"'; break;
+			case '\\': result[len++] = '\\'; break;
+			default: result[len++] = *p; break;
+			}
+			if (*p) p++;
+		} else {
+			result[len++] = *p++;
+		}
+	}
+	result[len] = 0;
+
+	return result;
+}
+
+/*
  * Background thread to check for updates (including UEFI DBX updates)
  */
 static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
@@ -575,150 +636,141 @@ static DWORD WINAPI CheckForUpdatesThread(LPVOID param)
 	PrintInfoDebug(3000, MSG_352);
 	CheckForDBXUpdates(verbose);
 
+	// RuBeRoID: Check for updates via GitHub API
 	PrintInfoDebug(3000, MSG_243);
 	status++;	// 1
 
-	if (!InternetCrackUrlA(server_url, (DWORD)safe_strlen(server_url), 0, &UrlParts))
-		goto out;
-	hostname[sizeof(hostname)-1] = 0;
-
-	static_sprintf(agent, APPLICATION_NAME "/%d.%d.%d (Windows NT %lu.%lu%s)",
-		rufus_version[0], rufus_version[1], rufus_version[2],
-		WindowsVersion.Major, WindowsVersion.Minor, is_WOW64() ? "; WOW64" : "");
 	hSession = GetInternetSession(NULL, FALSE);
 	if (hSession == NULL)
 		goto out;
-	hConnection = InternetConnectA(hSession, UrlParts.lpszHostName, UrlParts.nPort,
+
+	hConnection = InternetConnectA(hSession, "api.github.com", INTERNET_DEFAULT_HTTPS_PORT,
 		NULL, NULL, INTERNET_SERVICE_HTTP, 0, (DWORD_PTR)NULL);
 	if (hConnection == NULL)
 		goto out;
 
+	vuprintf("Using GitHub API for the update check");
+
 	status++;	// 2
-	// BETAs are only made available when the application arch is x86_64
-	if (is_x86_64)
-		releases_only = !ReadSettingBool(SETTING_INCLUDE_BETAS);
 
-	// Test releases get their own distribution channel (and also force beta checks)
-#if defined(TEST)
-	max_channel = (int)ARRAYSIZE(channel);
-#else
-	max_channel = releases_only ? 1 : (int)ARRAYSIZE(channel) - 1;
-#endif
-	vuprintf("Using %s for the update check", RUFUS_URL);
-	for (k = 0; (k < max_channel) && (!found_new_version); k++) {
-		// Get the arch name and convert it lowercase
-		char* archname = strdup(GetArchName(WindowsVersion.Arch));
-		safe_strtolower(archname);
-		// Free any previous buffers we might have used
-		safe_free(buf);
-		safe_free(sig);
-		uprintf("Checking %s channel...", channel[k]);
-		// At this stage we can query the server for various update version files.
-		// We first try to lookup for "<appname>_<os_arch>_<os_version_major>_<os_version_minor>.ver"
-		// and then remove each of the <os_> components until we find our match. For instance, we may first
-		// look for rufus_win_x64_6.2.ver (Win8 x64) but only get a match for rufus_win_x64_6.ver (Vista x64 or later)
-		// This allows sunsetting OS versions (eg XP) or providing different downloads for different archs/groups.
-		// Note that for BETAs, we only catter for x64 regardless of the OS arch.
-		static_sprintf(urlpath, "%s%s%s_win_%s_%lu.%lu.ver", APPLICATION_NAME, (k == 0) ? "": "_",
-			(k == 0) ? "" : channel[k], archname, WindowsVersion.Major, WindowsVersion.Minor);
-		safe_free(archname);
-		vuprintf("Base update check: %s", urlpath);
-		for (i = 0, j = (int)safe_strlen(urlpath) - 5; (j > 0) && (i < ARRAYSIZE(verpos)); j--) {
-			if ((urlpath[j] == '.') || (urlpath[j] == '_')) {
-				verpos[i++] = j;
-			}
-		}
-		assert(i == ARRAYSIZE(verpos));
+	static_sprintf(agent, APPLICATION_NAME "/%d.%d.%d",
+		rufus_version[0], rufus_version[1], rufus_version[2]);
 
-		UrlParts.lpszUrlPath = urlpath;
-		UrlParts.dwUrlPathLength = sizeof(urlpath);
-		for (i = 0; i < ARRAYSIZE(verpos); i++) {
-			vvuprintf("Trying %s", UrlParts.lpszUrlPath);
-			hRequest = HttpOpenRequestA(hConnection, "GET", UrlParts.lpszUrlPath, NULL, NULL, accept_types,
-				INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP | INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
-				INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_HYPERLINK |
-				((UrlParts.nScheme == INTERNET_SCHEME_HTTPS) ? INTERNET_FLAG_SECURE : 0), (DWORD_PTR)NULL);
-			if (hRequest == NULL) {
-				uprintf("Unable to send request: %s", WindowsErrorString());
-				goto out;
-			}
-			// Must use "Accept-Encoding: identity" to get the file size
-			HttpSendRequestA(hRequest, "Accept-Encoding: identity", -1L, NULL, 0);
-
-			// Ensure that we get a text file
-			dwSize = sizeof(dwStatus);
-			dwStatus = 404;
-			HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE|HTTP_QUERY_FLAG_NUMBER, (LPVOID)&dwStatus, &dwSize, NULL);
-			if (dwStatus == 200)
-				break;
-			InternetCloseHandle(hRequest);
-			hRequest = NULL;
-			safe_strcpy(&urlpath[verpos[i]], 5, ".ver");
-		}
-		if (dwStatus != 200) {
-			vuprintf("Could not find a %s version file on server %s", channel[k], server_url);
-			if ((releases_only) || (k + 1 >= ARRAYSIZE(channel)))
-				goto out;
-			continue;
-		}
-		vuprintf("Found match for %s on server %s", urlpath, server_url);
-
-		// We also get a date from the web server, which we'll use to avoid out of sync check,
-		// in case some set their clock way into the future and back.
-		// On the other hand, if local clock is set way back in the past, we will never check.
-		dwSize = sizeof(ServerTime);
-		// If we can't get a date we can trust, don't bother...
-		if ( (!HttpQueryInfoA(hRequest, HTTP_QUERY_DATE|HTTP_QUERY_FLAG_SYSTEMTIME, (LPVOID)&ServerTime, &dwSize, NULL))
-			|| (!SystemTimeToFileTime(&ServerTime, &FileTime)) )
-			goto out;
-		server_time = ((((int64_t)FileTime.dwHighDateTime) << 32) + FileTime.dwLowDateTime) / 10000000;
-		vvuprintf("Server time: %" PRId64, server_time);
-		// Always store the server response time - the only clock we trust!
-		WriteSetting64(SETTING_LAST_UPDATE, server_time);
-		// Might as well let the user know
-		if (!force_update_check) {
-			if ((local_time > server_time + 600) || (local_time < server_time - 600)) {
-				uprintf("IMPORTANT: Your local clock is more than 10 minutes in the %s. Unless you fix this, "
-					APPLICATION_NAME " may not be able to check for updates...",
-					(local_time > server_time + 600)?"future":"past");
-			}
-		}
-
-		dwSize = sizeof(dwTotalSize);
-		if (!HttpQueryInfoA(hRequest, HTTP_QUERY_CONTENT_LENGTH|HTTP_QUERY_FLAG_NUMBER, (LPVOID)&dwTotalSize, &dwSize, NULL))
-			goto out;
-
-		// Make sure the file is NUL terminated
-		buf = (char*)calloc(dwTotalSize + 1, 1);
-		if (buf == NULL)
-			goto out;
-		// This is a version file - we should be able to gulp it down in one go
-		if (!InternetReadFile(hRequest, buf, dwTotalSize, &dwDownloaded) || (dwDownloaded != dwTotalSize))
-			goto out;
-		vuprintf("Successfully downloaded version file (%d bytes)", dwTotalSize);
-
-		// Now download the signature file
-		static_sprintf(sigpath, "%s/%s.sig", server_url, urlpath);
-		dwDownloaded = (DWORD)DownloadToFileOrBuffer(sigpath, NULL, &sig, NULL, FALSE);
-		if ((dwDownloaded != RSA_SIGNATURE_SIZE) || (!ValidateOpensslSignature(buf, dwTotalSize, sig, dwDownloaded))) {
-			uprintf("FATAL: Version signature is invalid ✗");
-			goto out;
-		}
-		vuprintf("Version signature is valid ✓");
-
-		status++;
-		parse_update(buf, dwTotalSize + 1);
-
-		vuprintf("UPDATE DATA:");
-		vuprintf("  version: %d.%d.%d (%s)", update.version[0], update.version[1], update.version[2], channel[k]);
-		vuprintf("  platform_min: %d.%d", update.platform_min[0], update.platform_min[1]);
-		vuprintf("  url: %s", update.download_url);
-
-		found_new_version = ((to_uint64_t(update.version) > to_uint64_t(rufus_version)) || (force_update))
-			&& ((WindowsVersion.Major > update.platform_min[0])
-				|| ((WindowsVersion.Major == update.platform_min[0]) && (WindowsVersion.Minor >= update.platform_min[1])));
-		uprintf("N%sew %s version found%c", found_new_version ? "" : "o n", channel[k], found_new_version ? '!' : '.');
+	hRequest = HttpOpenRequestA(hConnection, "GET", "/repos/" RUFUS_REPO "/releases/latest",
+		NULL, NULL, accept_types,
+		INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_HYPERLINK | INTERNET_FLAG_SECURE,
+		(DWORD_PTR)NULL);
+	if (hRequest == NULL) {
+		uprintf("Unable to send request: %s", WindowsErrorString());
+		goto out;
 	}
+	{
+		char headers[256];
+		static_sprintf(headers, "Accept: application/vnd.github.v3+json\r\nUser-Agent: %s", agent);
+		if (!HttpSendRequestA(hRequest, headers, -1L, NULL, 0)) {
+			uprintf("Failed to send request: %s", WindowsErrorString());
+			goto out;
+		}
+	}
+
+	dwSize = sizeof(dwStatus);
+	dwStatus = 404;
+	HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE|HTTP_QUERY_FLAG_NUMBER, (LPVOID)&dwStatus, &dwSize, NULL);
+	if (dwStatus != 200) {
+		vuprintf("GitHub API returned status %lu", dwStatus);
+		goto out;
+	}
+
+	dwSize = sizeof(dwTotalSize);
+	if (!HttpQueryInfoA(hRequest, HTTP_QUERY_CONTENT_LENGTH|HTTP_QUERY_FLAG_NUMBER, (LPVOID)&dwTotalSize, &dwSize, NULL))
+		goto out;
+
+	buf = (char*)calloc(dwTotalSize + 1, 1);
+	if (buf == NULL)
+		goto out;
+	if (!InternetReadFile(hRequest, buf, dwTotalSize, &dwDownloaded) || (dwDownloaded != dwTotalSize))
+		goto out;
+
+	vuprintf("Successfully downloaded GitHub release info (%d bytes)", dwTotalSize);
+
+	// Parse tag_name from JSON
+	{
+		char tag[64] = "";
+		char *p, *ver_str;
+		int n;
+
+		p = strstr(buf, "\"tag_name\": \"");
+		if (p != NULL) {
+			p += 13;
+			for (n = 0; n < (int)sizeof(tag) - 1 && *p && *p != '\"'; n++)
+				tag[n] = *p++;
+			tag[n] = 0;
+		}
+		if (tag[0] == 0) {
+			vuprintf("Could not find tag_name in GitHub response");
+			goto out;
+		}
+		vuprintf("Latest release tag: %s", tag);
+
+		// Parse version from tag (e.g., "v4.15-ruberoid" -> "4.15" -> [4,15,0])
+		ver_str = tag;
+		if (ver_str[0] == 'v' || ver_str[0] == 'V')
+			ver_str++;
+		p = strchr(ver_str, '-');
+		if (p != NULL)
+			*p = 0;
+		for (n = 0; n < 3; n++)
+			update.version[n] = 0;
+		n = 0;
+		p = strtok(ver_str, ".");
+		while (p != NULL && n < 3) {
+			update.version[n++] = (uint16_t)atoi(p);
+			p = strtok(NULL, ".");
+		}
+	}
+
+	// Parse browser_download_url from JSON
+	{
+		char url[1024] = "";
+		char *p;
+		int n;
+
+		p = strstr(buf, "\"browser_download_url\": \"");
+		if (p != NULL) {
+			p += 24;
+			for (n = 0; n < (int)sizeof(url) - 1 && *p && *p != '\"'; n++)
+				url[n] = *p++;
+			url[n] = 0;
+		}
+		if (url[0] == 0) {
+			vuprintf("Could not find download URL in GitHub response");
+			goto out;
+		}
+		safe_free(update.download_url);
+		update.download_url = strdup(url);
+	}
+
+	// Parse body (release notes)
+	safe_free(update.release_notes);
+	update.release_notes = extract_json_string_value(buf, "body");
+	if (update.release_notes == NULL) {
+		update.release_notes = (char*)malloc(128);
+		if (update.release_notes != NULL)
+			safe_sprintf(update.release_notes, 128, "See " RUFUS_URL_RELEASES " for details.");
+	}
+
+	// We support all Windows versions that Rufus supports
+	update.platform_min[0] = 5;
+	update.platform_min[1] = 2;
+
+	status++;	// 3
+
+	vuprintf("UPDATE DATA:");
+	vuprintf("  version: %d.%d.%d", update.version[0], update.version[1], update.version[2]);
+	vuprintf("  url: %s", update.download_url);
+
+	found_new_version = (to_uint64_t(update.version) > to_uint64_t(rufus_version)) || (force_update);
+	uprintf("N%sew version found%c", found_new_version ? "" : "o n", found_new_version ? '!' : '.');
 
 out:
 	safe_free(buf);
@@ -805,7 +857,7 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 
 	json_url = malloc(MAX_PATH);
 	if (json_url == NULL) goto out;
-	static_sprintf(json_url, "%s/%s", RUFUS_REPO_RAW, "iso_links.json");
+	safe_sprintf(json_url, MAX_PATH, "%s/%s", RUFUS_REPO_RAW, "iso_links.json");
 
 	PrintInfo(0, MSG_148);
 	SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
@@ -820,13 +872,13 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 	json_buffer[json_len] = 0;
 
 	arch_str = (dp->arch == 1) ? "x86" : "x64";
-	static_sprintf(search_key, "\"%d_%s\":\"", dp->os_id, arch_str);
+	static_sprintf(search_key, "\"%d_%s\": \"", dp->os_id, arch_str);
 
 	p = strstr((char*)json_buffer, search_key);
 	if (p == NULL) {
 		uprintf("Download link for %s not found in GitHub data", search_key);
 		Notification(MB_ICONERROR | MB_CLOSE, lmprintf(MSG_212),
-			L"Download link not available.\nRequest via Telegram bot.");
+			"Download link not available.\nRequest via Telegram bot.");
 		goto out;
 	}
 	p += strlen(search_key);
