@@ -9,6 +9,9 @@ permissions:
   contents: write
   issues: write
 
+env:
+  PROTECTED_FILES: "src/net.c src/stdlg.c src/rufus.h"
+
 jobs:
   check-upstream:
     runs-on: ubuntu-latest
@@ -62,6 +65,35 @@ jobs:
           git remote add upstream https://github.com/pbatard/rufus.git
           git fetch upstream --tags --force
 
+      - name: Check upstream changes in protected files
+        id: check_protected
+        run: |
+          UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
+          CHANGED=""
+          for f in $PROTECTED_FILES; do
+            if git diff --quiet "refs/tags/$UPSTREAM_TAG" -- "$f" 2>/dev/null; then
+              echo "$f: no changes"
+            else
+              echo "$f: CHANGED upstream"
+              CHANGED="$CHANGED $f"
+            fi
+          done
+          if [ -n "$CHANGED" ]; then
+            echo "Any protected files changed upstream? YES: $CHANGED"
+            echo "upstream_changed=$CHANGED" >> $GITHUB_OUTPUT
+          else
+            echo "Any protected files changed upstream? NO"
+            echo "upstream_changed=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Save upstream versions of protected files
+        if: steps.check_protected.outputs.upstream_changed != ''
+        run: |
+          UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
+          for f in $PROTECTED_FILES; do
+            git show "refs/tags/$UPSTREAM_TAG:$f" > "/tmp/upstream_$(echo $f | tr '/' '_')" 2>/dev/null || true
+          done
+
       - name: Merge upstream
         id: merge
         run: |
@@ -92,6 +124,42 @@ jobs:
             --notes "Автоматический релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)." `
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe"
 
+      - name: Notify on upstream changes in protected files
+        if: always() && steps.check_protected.outputs.upstream_changed != '' && steps.build.outputs.build_ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
+          FORK_TAG="${UPSTREAM_TAG}-ruberoid"
+          CHANGED="${{ steps.check_protected.outputs.upstream_changed }}"
+          DIFF_LINKS=""
+          for f in $CHANGED; do
+            DIFF_LINKS="$DIFF_LINKS
+- [$f](https://github.com/WestDvina/rufus-RuBeRoID/compare/$FORK_TAG?diff=split#diff-$(echo -n $f | md5sum | cut -c1-8))"
+          done
+          gh issue create \
+            --title "Upstream изменил защищённые файлы в $UPSTREAM_TAG" \
+            --label "review" \
+            --body "**Релиз:** [$FORK_TAG](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG) создан автоматически.
+
+Upstream внёс изменения в наши защищённые файлы. Они были пропущены (наша версия сохранена).
+Проверьте, нужно ли портировать изменения вручную:
+
+**Изменённые файлы:**$DIFF_LINKS
+
+Просмотр diff upstream vs наш:
+\`\`\`
+UPSTREAM_TAG=$UPSTREAM_TAG
+for f in $CHANGED; do
+  echo "=== \$f ==="
+  git fetch upstream refs/tags/\$UPSTREAM_TAG
+  git diff refs/tags/\$UPSTREAM_TAG -- \$f
+done
+\`\`\`
+
+Если изменения нужны — отредактируйте файлы и запушьте в main.
+Следующий запуск workflow создаст новый релиз."
+
       - name: Notify on build failure
         if: steps.build.outputs.build_ok == 'false'
         env:
@@ -102,7 +170,7 @@ jobs:
             --title "Сборка сломана после слияния $UPSTREAM_TAG" \
             --body "Слияние с upstream [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG) прошло, но сборка не удалась.
 
-Вероятно, upstream изменил API, от которого зависит наш код в \`src/net.c\`, \`src/stdlg.c\` или \`src/rufus.h\`.
+Вероятно, upstream изменил API, от которого зависит наш код в защищённых файлах.
 
 1. Соберите локально и исправьте ошибки
 2. Запушьте: \`git push origin main\`
