@@ -19,7 +19,7 @@ jobs:
       new_tag: ${{ steps.check.outputs.new_tag }}
       upstream_tag: ${{ steps.check.outputs.upstream_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -46,10 +46,13 @@ jobs:
     needs: check-upstream
     if: needs.check-upstream.outputs.new_tag == 'true'
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     outputs:
       build_ok: ${{ steps.build.outputs.build_ok }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -121,13 +124,13 @@ jobs:
           FORK_TAG="${UPSTREAM_TAG}-ruberoid"
           git tag "$FORK_TAG" -m "Rufus-RuBeRoID based on upstream $UPSTREAM_TAG"
           git push origin "$FORK_TAG"
-          gh release create "$FORK_TAG" `
-            --title "Rufus-RuBeRoID $FORK_TAG" `
-            --notes "Автоматический релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)." `
+          gh release create "$FORK_TAG" \
+            --title "Rufus-RuBeRoID $FORK_TAG" \
+            --notes "Автоматический релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)." \
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe"
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" `
-            -d "chat_id=${TG_CHAT}" `
-            -d "parse_mode=Markdown" `
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" \
+            -d "parse_mode=Markdown" \
             -d "text=*✅ Rufus-RuBeRoID $FORK_TAG*%0A%0AНовый релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)%0A[Скачать](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG)"
 
       - name: Notify on upstream changes in protected files
@@ -143,9 +146,9 @@ jobs:
             --title "Upstream изменил защищённые файлы в $UPSTREAM_TAG" \
             --label "review" \
             --body "Релиз создан, но upstream изменил наши файлы. Проверьте: $CHANGED"
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" `
-            -d "chat_id=${TG_CHAT}" `
-            -d "parse_mode=Markdown" `
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" \
+            -d "parse_mode=Markdown" \
             -d "text=*⚠️ Upstream изменил защищённые файлы в $UPSTREAM_TAG*%0A%0AFiles: \`$CHANGED\`%0AРелиз создан, но проверьте изменения в Issues репозитория"
 
       - name: Notify on build failure
@@ -159,7 +162,7 @@ jobs:
           gh issue create \
             --title "Сборка сломана после слияния $UPSTREAM_TAG" \
             --body "Слияние прошло, но сборка не удалась. Исправьте и запушьте в main."
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" `
-            -d "chat_id=${TG_CHAT}" `
-            -d "parse_mode=Markdown" `
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT}" \
+            -d "parse_mode=Markdown" \
             -d "text=*❌ Сборка сломана после слияния $UPSTREAM_TAG*%0A%0AСмотри Issue в репозитории"
