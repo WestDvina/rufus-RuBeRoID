@@ -44,7 +44,7 @@ jobs:
     if: needs.check-upstream.outputs.new_tag == 'true'
     runs-on: windows-latest
     outputs:
-      merge_ok: ${{ steps.merge.outputs.merge_ok }}
+      build_ok: ${{ steps.build.outputs.build_ok }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,34 +55,36 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config merge.ours.driver true
 
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/pbatard/rufus.git
           git fetch upstream --tags --force
 
-      - name: Try merge upstream
+      - name: Merge upstream
         id: merge
         run: |
           git checkout main
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
-          git merge --no-edit "refs/tags/$UPSTREAM_TAG" 2>&1 && echo "merge_ok=true" >> $GITHUB_OUTPUT || echo "merge_ok=false" >> $GITHUB_OUTPUT
+          git merge --no-edit "refs/tags/$UPSTREAM_TAG"
+          echo "merge_ok=true" >> $GITHUB_OUTPUT
 
       - name: Build (Release x64)
-        if: steps.merge.outputs.merge_ok == 'true'
+        id: build
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" 2>nul || call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" 2>nul || call "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-          msbuild rufus.sln /p:Configuration=Release /p:Platform=x64 /v:minimal
+          msbuild rufus.sln /p:Configuration=Release /p:Platform=x64 /v:minimal && (echo build_ok=true >> %GITHUB_OUTPUT%) || (echo build_ok=false >> %GITHUB_OUTPUT%)
 
       - name: Push merge & create release
-        if: steps.merge.outputs.merge_ok == 'true'
+        if: steps.build.outputs.build_ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          git push origin main
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
           FORK_TAG="${UPSTREAM_TAG}-ruberoid"
-          git push origin main
           git tag "$FORK_TAG" -m "Rufus-RuBeRoID based on upstream $UPSTREAM_TAG"
           git push origin "$FORK_TAG"
           gh release create "$FORK_TAG" `
@@ -90,34 +92,18 @@ jobs:
             --notes "Автоматический релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)." `
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe"
 
-  create-pr:
-    needs: [check-upstream, merge-and-build]
-    if: always() && needs.check-upstream.outputs.new_tag == 'true' && needs.merge-and-build.outputs.merge_ok == 'false'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Notify about conflicts
+      - name: Notify on build failure
+        if: steps.build.outputs.build_ok == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
           gh issue create \
-            --title "Конфликт при слиянии $UPSTREAM_TAG" \
-            --body "Автоматическое слияние с upstream [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG) вызвало конфликты.
+            --title "Сборка сломана после слияния $UPSTREAM_TAG" \
+            --body "Слияние с upstream [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG) прошло, но сборка не удалась.
 
-1. Смержите вручную:
-   ```
-   git remote add upstream https://github.com/pbatard/rufus.git
-   git fetch upstream --tags
-   git checkout main
-   git merge refs/tags/$UPSTREAM_TAG
-   ```
-2. Разрешите конфликты (скорее всего \`src/net.c\`, \`src/stdlg.c\`, \`src/rufus.h\`)
-3. Закоммитьте и запушьте:
-   ```
-   git push origin main
-   ```
-4. Запустите workflow вручную: Actions → Sync \& Release → Run workflow"
+Вероятно, upstream изменил API, от которого зависит наш код в \`src/net.c\`, \`src/stdlg.c\` или \`src/rufus.h\`.
+
+1. Соберите локально и исправьте ошибки
+2. Запушьте: \`git push origin main\`
+3. Запустите workflow вручную: Actions → Sync \& Release → Run workflow"
