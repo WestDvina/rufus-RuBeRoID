@@ -1694,28 +1694,23 @@ INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM l
  * Use a thread to enable the download button as this may be a lengthy
  * operation due to the external download check.
  */
-static DWORD WINAPI CheckForFidoThread(LPVOID param)
+static DWORD WINAPI CheckForDownloadThread(LPVOID param)
 {
 	static BOOL is_active = FALSE;
 	LONG_PTR style;
-	char* loc = NULL;
 	uint32_t i;
 	uint64_t len;
 	HWND hCtrl;
 
-	// Because a user may switch language before this thread has completed,
-	// we need to detect concurrency.
-	// Checking on a static boolean is more than good enough for our purpose.
 	if (is_active)
 		return -1;
 	is_active = TRUE;
-	safe_free(fido_url);
 	safe_free(sbat_entries);
 	safe_free(sbat_level_txt);
 	safe_free(sb_active_txt);
 	safe_free(sb_revoked_txt);
 
-	// Get the latest sbat_level.txt data while we're poking the network for Fido.
+	// Get the latest sbat_level.txt data
 	len = DownloadToFileOrBuffer(RUFUS_URL "/sbat_level.txt", NULL, (BYTE**)&sbat_level_txt, NULL, FALSE);
 	if (len != 0 && len < 1 * KB) {
 		sbat_entries = GetSbatEntries(sbat_level_txt);
@@ -1744,22 +1739,9 @@ static DWORD WINAPI CheckForFidoThread(LPVOID param)
 		}
 	}
 
-	// Get the Fido URL from parsing a 'Fido.ver' on our server. This enables the use of different
-	// Fido versions from different versions of Rufus, if needed, as opposed to always downloading
-	// the latest release from GitHub, which may contain incompatible changes...
-	len = DownloadToFileOrBuffer(RUFUS_URL "/Fido.ver", NULL, (BYTE**)&loc, NULL, FALSE);
-	if ((len == 0) || (len >= 4 * KB))
-		goto out;
-
-	len++;	// DownloadToFileOrBuffer allocated an extra NUL character if needed
-	fido_url = get_token_data_buffer(FIDO_VERSION, 1, loc, (size_t)len);
-	if (safe_strncmp(fido_url, "https://github.com/pbatard/Fido", 31) != 0) {
-		uprintf("WARNING: Download script URL %s is invalid ✗", fido_url);
-		safe_free(fido_url);
-		goto out;
-	}
-	if (IsDownloadable(fido_url)) {
-		hCtrl = GetDlgItem(hMainDialog, IDC_SELECT);
+	// RuBeRoID: Enable download split button (no Fido check needed)
+	hCtrl = GetDlgItem(hMainDialog, IDC_SELECT);
+	if (hCtrl != NULL) {
 		style = GetWindowLongPtr(hCtrl, GWL_STYLE);
 		style |= BS_SPLITBUTTON;
 		SetWindowLongPtr(hCtrl, GWL_STYLE, style);
@@ -1767,33 +1749,23 @@ static DWORD WINAPI CheckForFidoThread(LPVOID param)
 		InvalidateRect(hCtrl, NULL, TRUE);
 	}
 
-out:
-	safe_free(loc);
 	is_active = FALSE;
 	return 0;
 }
 
 void SetFidoCheck(void)
 {
-	// Detect if we can use Fido, which depends on:
-	// - Powershell being installed
-	// - Rufus running in AppStore mode or update check being enabled
-	// - URL for the script being reachable
-	if ((ReadRegistryKey32(REGKEY_HKLM, "Software\\Microsoft\\PowerShell\\1\\Install") <= 0) &&
-		(ReadRegistryKey32(REGKEY_HKLM, "Software\\Microsoft\\PowerShell\\3\\Install") <= 0)) {
-		ubprintf("Notice: The ISO download feature has been deactivated because "
-			"a compatible PowerShell version was not detected on this system.");
-		return;
-	}
-
+	// RuBeRoID: We don't need Fido or PowerShell.
+	// Enable the download button if updates are enabled.
 	if (!appstore_version && (ReadSetting32(SETTING_UPDATE_INTERVAL) <= 0)) {
 		ubprintf("Notice: The ISO download feature has been deactivated because "
 			"'Check for updates' is disabled in your settings.");
 		return;
 	}
 
-	CreateThread(NULL, 0, CheckForFidoThread, NULL, 0, NULL);
+	CreateThread(NULL, 0, CheckForDownloadThread, NULL, 0, NULL);
 }
+
 
 /*
  * Initial update check setup

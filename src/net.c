@@ -776,208 +776,176 @@ BOOL CheckForUpdates(BOOL force)
 }
 
 /*
- * Download an ISO through Fido
+ * Download an ISO — RuBeRoID replacement for Fido
+ * Fetches iso_links.json from GitHub repo, parses it, downloads ISO.
  */
+
+typedef struct {
+	int os_id;
+	int arch;
+} download_params;
+
 static DWORD WINAPI DownloadISOThread(LPVOID param)
 {
-	char locale_str[1024], cmdline[sizeof(locale_str) + 512], pipe[MAX_GUID_STRING_LENGTH + 16] = "\\\\.\\pipe\\";
-	char powershell_path[MAX_PATH], icon_path[MAX_PATH] = { 0 }, script_path[MAX_PATH] = { 0 };
-	char *url = NULL, sig_url[128];
-	uint64_t uncompressed_size;
-	int64_t size = -1;
-	BYTE *compressed = NULL, *sig = NULL;
-	HANDLE hFile = INVALID_HANDLE_VALUE, hPipe = INVALID_HANDLE_VALUE;
-	DWORD dwExitCode = 99, dwCompressedSize, dwSize, dwAvail, dwPipeSize = 4096;
-	GUID guid;
+	download_params* dp = (download_params*)param;
+	char *json_url, *iso_url, *end, *p;
+	const char* arch_str;
+	BYTE *json_buffer;
+	DWORD json_len;
+	char search_key[24];
+	IMG_SAVE img_save;
+
+	json_url = NULL;
+	iso_url = NULL;
+	json_buffer = NULL;
+	memset(&img_save, 0, sizeof(img_save));
 
 	dialog_showing++;
 	IGNORE_RETVAL(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
 
-	// Use a GUID as random unique string, else ill-intentioned security "researchers"
-	// may either spam our pipe or replace our script to fool antivirus solutions into
-	// thinking that Rufus is doing something malicious...
-	IGNORE_RETVAL(CoCreateGuid(&guid));
-	// coverity[fixed_size_dest]
-	strcpy(&pipe[9], GuidToString(&guid, TRUE));
-	static_sprintf(icon_path, "%s%s.ico", temp_dir, APPLICATION_NAME);
-	ExtractAppIcon(icon_path, TRUE);
+	json_url = malloc(MAX_PATH);
+	if (json_url == NULL) goto out;
+	static_sprintf(json_url, "%s/%s", RUFUS_REPO_RAW, "iso_links.json");
 
-//#define FORCE_URL "https://github.com/pbatard/rufus/raw/master/res/loc/test/windows_to_go.iso"
-//#define FORCE_URL "https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-9.8.0-amd64-netinst.iso"
-#if !defined(FORCE_URL)
-#if defined(RUFUS_TEST)
-	IGNORE_RETVAL(hFile);
-	IGNORE_RETVAL(sig_url);
-	IGNORE_RETVAL(dwCompressedSize);
-	IGNORE_RETVAL(uncompressed_size);
-	// In test mode, just use our local script
-	static_strcpy(script_path, "D:\\Projects\\Fido\\Fido.ps1");
-#else
-	// If we don't have the script, download it
-	if (fido_script == NULL) {
-		dwCompressedSize = (DWORD)DownloadToFileOrBuffer(fido_url, NULL, &compressed, hMainDialog, FALSE);
-		if (dwCompressedSize == 0)
-			goto out;
-		static_sprintf(sig_url, "%s.sig", fido_url);
-		dwSize = (DWORD)DownloadToFileOrBuffer(sig_url, NULL, &sig, NULL, FALSE);
-		if ((dwSize != RSA_SIGNATURE_SIZE) || (!ValidateOpensslSignature(compressed, dwCompressedSize, sig, dwSize))) {
-			uprintf("FATAL: Download signature is invalid ✗");
-			ErrorStatus = RUFUS_ERROR(APPERR(ERROR_BAD_SIGNATURE));
-			SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_ERROR, 0);
-			SetTaskbarProgressState(TASKBAR_ERROR);
-			safe_free(compressed);
-			free(sig);
-			goto out;
-		}
-		free(sig);
-		uprintf("Download signature is valid ✓");
-		uncompressed_size = *((uint64_t*)&compressed[5]);
-		if ((uncompressed_size < 1 * MB) && (bled_init(0, uprintf, NULL, NULL, NULL, NULL, &ErrorStatus) >= 0)) {
-			fido_script = malloc((size_t)uncompressed_size);
-			size = bled_uncompress_from_buffer_to_buffer(compressed, dwCompressedSize, fido_script, (size_t)uncompressed_size, BLED_COMPRESSION_LZMA);
-			bled_exit();
-		}
-		safe_free(compressed);
-		if (size != uncompressed_size) {
-			uprintf("FATAL: Could not uncompressed download script");
-			safe_free(fido_script);
-			ErrorStatus = RUFUS_ERROR(ERROR_INVALID_DATA);
-			SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_ERROR, 0);
-			SetTaskbarProgressState(TASKBAR_ERROR);
-			goto out;
-		}
-		fido_len = (DWORD)size;
-		SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
-		SetTaskbarProgressState(TASKBAR_NORMAL);
-		SetTaskbarProgressValue(0, MAX_PROGRESS);
-		SendMessage(hProgress, PBM_SETPOS, 0, 0);
-	}
 	PrintInfo(0, MSG_148);
+	SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
 
-	if_assert_fails((fido_script != NULL) && (fido_len != 0))
-		goto out;
-
-	// Why oh why does PowerShell refuse to open read-only files that haven't been closed?
-	// Because of this limitation, we can't fully prevent TOCTOUs on the file we create, and therefore we:
-	// - Create the file with a "random" non-guessable name => TOCTOUs require a permanently running script/exe
-	// - Create the file in the user's AppData temp directory => TOCTOUs can't be enacted by a different user
-	// - Create the file with Administrator access only => TOCTOUs require elevated privileges (in which case
-	// the machine is already compromised anyway, so TOCTOU attacks become entirely moot)
-	// See https://github.com/pbatard/rufus/security/advisories/GHSA-hcx5-hrhj-xhq9 and CVE-2026-23988.
-	static_sprintf(script_path, "%s%s.ps1", temp_dir, GuidToString(&guid, TRUE));
-	hFile = CreateFileRestrictedU(script_path, GENERIC_WRITE, FILE_SHARE_READ, CREATE_ALWAYS, FILE_ATTRIBUTE_READONLY);
-	if (hFile == INVALID_HANDLE_VALUE) {
-		uprintf("Unable to create download script '%s': %s", script_path, WindowsErrorString());
+	json_len = (DWORD)DownloadToFileOrBuffer(json_url, NULL, &json_buffer, hMainDialog, FALSE);
+	if (json_len == 0) {
+		uprintf("Failed to download link data from GitHub");
+		Notification(MB_ICONERROR | MB_CLOSE, lmprintf(MSG_194, "iso_links.json"),
+			lmprintf(MSG_043, WindowsErrorString()));
 		goto out;
 	}
-	if ((!WriteFile(hFile, fido_script, fido_len, &dwSize, NULL)) || (dwSize != fido_len)) {
-		uprintf("Unable to write download script '%s': %s", script_path, WindowsErrorString());
+	json_buffer[json_len] = 0;
+
+	arch_str = (dp->arch == 1) ? "x86" : "x64";
+	static_sprintf(search_key, "\"%d_%s\":\"", dp->os_id, arch_str);
+
+	p = strstr((char*)json_buffer, search_key);
+	if (p == NULL) {
+		uprintf("Download link for %s not found in GitHub data", search_key);
+		Notification(MB_ICONERROR | MB_CLOSE, lmprintf(MSG_212),
+			L"Download link not available.\nRequest via Telegram bot.");
 		goto out;
 	}
-	safe_closehandle(hFile);
-#endif
-	static_sprintf(powershell_path, "%s\\WindowsPowerShell\\v1.0\\powershell.exe", system_dir);
-	static_sprintf(locale_str, "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
-		selected_locale->txt[0], lmprintf(MSG_135), lmprintf(MSG_136), lmprintf(MSG_137),
-		lmprintf(MSG_138), lmprintf(MSG_139), lmprintf(MSG_040), lmprintf(MSG_140), lmprintf(MSG_141),
-		lmprintf(MSG_006), lmprintf(MSG_007), lmprintf(MSG_042), lmprintf(MSG_142), lmprintf(MSG_143),
-		lmprintf(MSG_144), lmprintf(MSG_145), lmprintf(MSG_146), lmprintf(MSG_199));
+	p += strlen(search_key);
+	end = strchr(p, '"');
+	if (end == NULL) { uprintf("JSON parse error: unterminated URL"); goto out; }
+	*end = 0;
+	iso_url = _strdup(p);
+	*end = '"';
 
-	hPipe = CreateNamedPipeA(pipe, PIPE_ACCESS_INBOUND,
-		PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, PIPE_UNLIMITED_INSTANCES,
-		dwPipeSize, dwPipeSize, 0, NULL);
-	if (hPipe == INVALID_HANDLE_VALUE) {
-		uprintf("Could not create pipe '%s': %s", pipe, WindowsErrorString());
-		goto out;
+	if (iso_url == NULL || strlen(iso_url) < 10) {
+		uprintf("Invalid ISO URL"); goto out;
 	}
+	uprintf("Got ISO URL (%.80s...)", iso_url);
 
-	// Ideally, since our script is signed, we'd have '-ExecutionPolicy AllSigned' below.
-	// Except that, in the myriad of execution policy options they provide, Microsoft chose
-	// not to add an option that allows signed scripts that validate up to the root of trust,
-	// but aren't in Trusted Publishers, to be validated:
-	// https://old.reddit.com/r/PowerShell/comments/kpwi5r/powershell_script_signing_trusted_publisher_prompt/gzi10oc/
-	static_sprintf(cmdline, "\"%s\" -NonInteractive -Sta -NoProfile -ExecutionPolicy Bypass "
-		"-File \"%s\" -PipeName %s -LocData \"%s\" -Icon \"%s\" -AppTitle \"%s\" -PlatformArch \"%s\"",
-		powershell_path, script_path, &pipe[9], locale_str, icon_path, lmprintf(MSG_149), GetArchName(NativeMachine));
-
-#ifndef RUFUS_TEST
-	// Because we can't force PowerShell to do it, we validate the signature of the local script.
-	if (ValidateSignature(INVALID_HANDLE_VALUE, script_path) != NO_ERROR) {
-		uprintf("FATAL: Script signature is invalid ✗");
-		ErrorStatus = RUFUS_ERROR(APPERR(ERROR_BAD_SIGNATURE));
-		SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_ERROR, 0);
-		SetTaskbarProgressState(TASKBAR_ERROR);
+	EXT_DECL(img_ext, GetShortName(iso_url), __VA_GROUP__("*.iso"), __VA_GROUP__(lmprintf(MSG_036)));
+	img_save.Type = VIRTUAL_STORAGE_TYPE_DEVICE_ISO;
+	img_save.ImagePath = FileDialog(TRUE, NULL, &img_ext, NULL);
+	if (img_save.ImagePath == NULL)
 		goto out;
-	}
-	uprintf("Script signature is valid ✓");
-#endif
 
+	SendMessage(hMainDialog, UM_PROGRESS_INIT, 0, 0);
 	ErrorStatus = 0;
-	dwExitCode = RunCommand(cmdline, app_data_dir, TRUE);
-	uprintf("Exited download script with code: %d", dwExitCode);
-	if ((dwExitCode == 0) && PeekNamedPipe(hPipe, NULL, dwPipeSize, NULL, &dwAvail, NULL) && (dwAvail != 0)) {
-		url = malloc(dwAvail + 1);
-		dwSize = 0;
-		if ((url != NULL) && ReadFile(hPipe, url, dwAvail, &dwSize, NULL) && (dwSize > 4)) {
-#else
-	{	{	url = strdup(FORCE_URL);
-			dwSize = (DWORD)strlen(FORCE_URL);
-#endif
-			IMG_SAVE img_save = { 0 };
-			url[min(dwSize, dwAvail)] = 0;
-			EXT_DECL(img_ext, GetShortName(url), __VA_GROUP__("*.iso"), __VA_GROUP__(lmprintf(MSG_036)));
-			img_save.Type = VIRTUAL_STORAGE_TYPE_DEVICE_ISO;
-			img_save.ImagePath = FileDialog(TRUE, NULL, &img_ext, NULL);
-			if (img_save.ImagePath == NULL) {
-				goto out;
-			}
-			// Download the ISO and report errors if any
-			SendMessage(hMainDialog, UM_PROGRESS_INIT, 0, 0);
-			ErrorStatus = 0;
-			SendMessage(hMainDialog, UM_TIMER_START, 0, 0);
-			if (DownloadToFileOrBuffer(url, img_save.ImagePath, NULL, hMainDialog, TRUE) == 0) {
-				SendMessage(hMainDialog, UM_PROGRESS_EXIT, 0, 0);
-				if (SCODE_CODE(ErrorStatus) == ERROR_CANCELLED) {
-					uprintf("Download cancelled by user");
-					Notification(MB_ICONINFORMATION | MB_CLOSE, lmprintf(MSG_211), lmprintf(MSG_041));
-					PrintInfo(0, MSG_211);
-				} else {
-					Notification(MB_ICONERROR | MB_CLOSE, lmprintf(MSG_194, GetShortName(url)), lmprintf(MSG_043, WindowsErrorString()));
-					PrintInfo(0, MSG_212);
-				}
-			} else {
-				// Download was successful => Select and scan the ISO
-				image_path = safe_strdup(img_save.ImagePath);
-				PostMessage(hMainDialog, UM_SELECT_ISO, 0, 0);
-			}
-			safe_free(img_save.ImagePath);
+	SendMessage(hMainDialog, UM_TIMER_START, 0, 0);
+
+	if (DownloadToFileOrBuffer(iso_url, img_save.ImagePath, NULL, hMainDialog, TRUE) == 0) {
+		SendMessage(hMainDialog, UM_PROGRESS_EXIT, 0, 0);
+		if (SCODE_CODE(ErrorStatus) == ERROR_CANCELLED) {
+			uprintf("Download cancelled by user");
+			Notification(MB_ICONINFORMATION | MB_CLOSE, lmprintf(MSG_211), lmprintf(MSG_041));
+			PrintInfo(0, MSG_211);
+		} else {
+			Notification(MB_ICONERROR | MB_CLOSE, lmprintf(MSG_194, GetShortName(iso_url)),
+				lmprintf(MSG_043, WindowsErrorString()));
+			PrintInfo(0, MSG_212);
 		}
+	} else {
+		image_path = safe_strdup(img_save.ImagePath);
+		PostMessage(hMainDialog, UM_SELECT_ISO, 0, 0);
 	}
 
 out:
-	safe_closehandle(hPipe);
-	safe_closehandle(hFile);
-	if (icon_path[0] != '\0')
-		DeleteFileU(icon_path);
-#if !defined(RUFUS_TEST)
-	if (script_path[0] != '\0') {
-		SetFileAttributesU(script_path, FILE_ATTRIBUTE_NORMAL);
-		DeleteFileU(script_path);
-	}
-#endif
-	free(url);
+	safe_free(img_save.ImagePath);
+	free(iso_url);
+	safe_free(json_buffer);
+	free(json_url);
+	free(dp);
 	SendMessage(hMainDialog, UM_ENABLE_CONTROLS, 0, 0);
 	dialog_showing--;
 	CoUninitialize();
-	ExitThread(dwExitCode);
+	ExitThread(0);
 }
 
 BOOL DownloadISO()
 {
-	if (CreateThread(NULL, 0, DownloadISOThread, NULL, 0, NULL) == NULL) {
-		uprintf("Unable to start Windows ISO download thread");
+	int os_id, arch, ver_result, arch_result;
+	download_params* dp;
+	TASKDIALOGCONFIG tdc;
+	TASKDIALOG_BUTTON ver_buttons[2];
+	TASKDIALOG_BUTTON arch_buttons[2];
+
+	ver_result = 0;
+	arch_result = 0;
+
+	// Version selection dialog
+	memset(&tdc, 0, sizeof(tdc));
+	tdc.cbSize = sizeof(tdc);
+	tdc.hwndParent = hMainDialog;
+	tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+	tdc.pszWindowTitle = L"RuBeRoID";
+	tdc.pszMainInstruction = L"Select Windows Version";
+	tdc.pszContent = L"Choose the version to download.\nLanguage: Russian only.";
+	tdc.nDefaultRadioButton = 0;
+	tdc.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
+	ver_buttons[0].nButtonID = 0;
+	ver_buttons[0].pszButtonText = L"Windows 11";
+	ver_buttons[1].nButtonID = 1;
+	ver_buttons[1].pszButtonText = L"Windows 10";
+	tdc.pRadioButtons = ver_buttons;
+	tdc.cRadioButtons = 2;
+
+	if (TaskDialogIndirect(&tdc, NULL, &ver_result, NULL) != S_OK)
+		return FALSE;
+	os_id = (ver_result == 0) ? 11 : 10;
+
+	if (os_id == 10) {
+		// Architecture selection for Win10
+		memset(&tdc, 0, sizeof(tdc));
+		tdc.cbSize = sizeof(tdc);
+		tdc.hwndParent = hMainDialog;
+		tdc.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+		tdc.pszWindowTitle = L"RuBeRoID";
+		tdc.pszMainInstruction = L"Select Architecture";
+		tdc.pszContent = L"Choose architecture for Windows 10.";
+		tdc.nDefaultRadioButton = 0;
+		tdc.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
+		arch_buttons[0].nButtonID = 0;
+		arch_buttons[0].pszButtonText = L"x64 (64-bit)";
+		arch_buttons[1].nButtonID = 1;
+		arch_buttons[1].pszButtonText = L"x86 (32-bit)";
+		tdc.pRadioButtons = arch_buttons;
+		tdc.cRadioButtons = 2;
+
+		if (TaskDialogIndirect(&tdc, NULL, &arch_result, NULL) != S_OK)
+			return FALSE;
+		arch = arch_result;
+	} else {
+		arch = 0;	// Win11 is x64 only
+	}
+
+	dp = (download_params*)malloc(sizeof(download_params));
+	if (dp == NULL) return FALSE;
+	dp->os_id = os_id;
+	dp->arch = arch;
+
+	if (CreateThread(NULL, 0, DownloadISOThread, dp, 0, NULL) == NULL) {
+		uprintf("Unable to start ISO download thread");
 		ErrorStatus = RUFUS_ERROR(APPERR(ERROR_CANT_START_THREAD));
 		SendMessage(hMainDialog, UM_ENABLE_CONTROLS, 0, 0);
+		free(dp);
 		return FALSE;
 	}
 	return TRUE;
