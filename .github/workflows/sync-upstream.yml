@@ -27,19 +27,15 @@ jobs:
         id: check
         run: |
           LATEST_UPSTREAM=$(git ls-remote --tags https://github.com/pbatard/rufus.git 'v*' | grep -oP 'refs/tags/\K(v[0-9]+\.[0-9]+)' | sort -V | tail -1)
-          LATEST_FORK=$(git tag -l 'v*' --sort=-v:refname | head -1)
           echo "upstream_tag=$LATEST_UPSTREAM" >> $GITHUB_OUTPUT
           if [ -z "$LATEST_UPSTREAM" ]; then
             echo "new_tag=false" >> $GITHUB_OUTPUT
-          elif [ -z "$LATEST_FORK" ]; then
-            echo "new_tag=true" >> $GITHUB_OUTPUT
+          elif git tag -l "${LATEST_UPSTREAM}-ruberoid" | grep -q .; then
+            echo "Fork tag ${LATEST_UPSTREAM}-ruberoid already exists, skipping"
+            echo "new_tag=false" >> $GITHUB_OUTPUT
           else
-            HIGHER=$(printf '%s\n' "$LATEST_FORK" "$LATEST_UPSTREAM" | sort -V | tail -1)
-            if [ "$HIGHER" = "$LATEST_UPSTREAM" ] && [ "$LATEST_UPSTREAM" != "$LATEST_FORK" ]; then
-              echo "new_tag=true" >> $GITHUB_OUTPUT
-            else
-              echo "new_tag=false" >> $GITHUB_OUTPUT
-            fi
+            echo "new tag $LATEST_UPSTREAM found, proceeding"
+            echo "new_tag=true" >> $GITHUB_OUTPUT
           fi
 
   merge-and-build:
