@@ -13,13 +13,7 @@ Microsoft блокирует IP из РФ, РБ и некоторых други
 
 ## Решение
 
-В Rufus-RuBeRoID механизм FIDO заменён на **прямое получение ссылок из публичного JSON-файла** в этом репозитории (`iso_links.json`).
-
-Файл автоматически обновляется ботом [MS ISO Downloader](https://github.com/WestDvina/ms-iso-downloader), который:
-1. Работает 24/7 на сервере за пределами РФ
-2. Через прокси обходит Sentinel и получает свежие ссылки с CDN Microsoft
-3. Кэширует их (TTL 22 часа)
-4. Публикует в `iso_links.json` в этом репозитории
+В Rufus-RuBeRoID механизм FIDO заменён на **прямое получение ссылок из публичного JSON-файла** в этом репозитории (`iso_links.json`). Ссылки автоматически обновляются и публикуются в файл `iso_links.json`.
 
 ## Как это работает
 
@@ -71,17 +65,6 @@ open rufus.sln → Build Solution
 # MinGW
 ./configure && make
 ```
-
-## Для владельца бота
-
-### `publish_cache.py`
-
-Скрипт в `c:\script\ms-iso-downloader\publish_cache.py`:
-1. Читает `iso_link_cache.json` (кэш бота)
-2. Проверяет TTL — если до протухания < 6 часов, дёргает API бота для обновления
-3. Публикует `iso_links.json` в репо через git push
-
-**Запуск по расписанию:** каждые 6 часов через Планировщик Windows.
 
 ## Ссылки
 
