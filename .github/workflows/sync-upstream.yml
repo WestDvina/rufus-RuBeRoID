@@ -105,12 +105,13 @@ jobs:
           git merge --no-edit "refs/tags/$UPSTREAM_TAG"
           echo "merge_ok=true" >> $GITHUB_OUTPUT
 
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: Build (Release x64)
         id: build
-        shell: cmd
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat" 2>nul || call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" 2>nul || call "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-          msbuild rufus.sln /p:Configuration=Release /p:Platform=x64 /v:minimal && (echo build_ok=true >> %GITHUB_OUTPUT%) || (echo build_ok=false >> %GITHUB_OUTPUT%)
+          msbuild rufus.sln /p:Configuration=Release /p:Platform=x64 /v:minimal && echo "build_ok=true" >> $GITHUB_OUTPUT || echo "build_ok=false" >> $GITHUB_OUTPUT
 
       - name: Push merge & create release
         if: steps.build.outputs.build_ok == 'true'
