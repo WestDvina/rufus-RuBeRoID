@@ -113,6 +113,8 @@ jobs:
         if: steps.build.outputs.build_ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           git push origin main
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
@@ -123,55 +125,41 @@ jobs:
             --title "Rufus-RuBeRoID $FORK_TAG" `
             --notes "Автоматический релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)." `
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe"
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" `
+            -d "chat_id=${TG_CHAT}" `
+            -d "parse_mode=Markdown" `
+            -d "text=*✅ Rufus-RuBeRoID $FORK_TAG*%0A%0AНовый релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)%0A[Скачать](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG)"
 
       - name: Notify on upstream changes in protected files
         if: always() && steps.check_protected.outputs.upstream_changed != '' && steps.build.outputs.build_ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
-          FORK_TAG="${UPSTREAM_TAG}-ruberoid"
           CHANGED="${{ steps.check_protected.outputs.upstream_changed }}"
-          DIFF_LINKS=""
-          for f in $CHANGED; do
-            DIFF_LINKS="$DIFF_LINKS
-- [$f](https://github.com/WestDvina/rufus-RuBeRoID/compare/$FORK_TAG?diff=split#diff-$(echo -n $f | md5sum | cut -c1-8))"
-          done
           gh issue create \
             --title "Upstream изменил защищённые файлы в $UPSTREAM_TAG" \
             --label "review" \
-            --body "**Релиз:** [$FORK_TAG](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG) создан автоматически.
-
-Upstream внёс изменения в наши защищённые файлы. Они были пропущены (наша версия сохранена).
-Проверьте, нужно ли портировать изменения вручную:
-
-**Изменённые файлы:**$DIFF_LINKS
-
-Просмотр diff upstream vs наш:
-\`\`\`
-UPSTREAM_TAG=$UPSTREAM_TAG
-for f in $CHANGED; do
-  echo "=== \$f ==="
-  git fetch upstream refs/tags/\$UPSTREAM_TAG
-  git diff refs/tags/\$UPSTREAM_TAG -- \$f
-done
-\`\`\`
-
-Если изменения нужны — отредактируйте файлы и запушьте в main.
-Следующий запуск workflow создаст новый релиз."
+            --body "Релиз создан, но upstream изменил наши файлы. Проверьте: $CHANGED"
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" `
+            -d "chat_id=${TG_CHAT}" `
+            -d "parse_mode=Markdown" `
+            -d "text=*⚠️ Upstream изменил защищённые файлы в $UPSTREAM_TAG*%0A%0AFiles: \`$CHANGED\`%0AРелиз создан, но проверьте изменения в Issues репозитория"
 
       - name: Notify on build failure
         if: steps.build.outputs.build_ok == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
           gh issue create \
             --title "Сборка сломана после слияния $UPSTREAM_TAG" \
-            --body "Слияние с upstream [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG) прошло, но сборка не удалась.
-
-Вероятно, upstream изменил API, от которого зависит наш код в защищённых файлах.
-
-1. Соберите локально и исправьте ошибки
-2. Запушьте: \`git push origin main\`
-3. Запустите workflow вручную: Actions → Sync \& Release → Run workflow"
+            --body "Слияние прошло, но сборка не удалась. Исправьте и запушьте в main."
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" `
+            -d "chat_id=${TG_CHAT}" `
+            -d "parse_mode=Markdown" `
+            -d "text=*❌ Сборка сломана после слияния $UPSTREAM_TAG*%0A%0AСмотри Issue в репозитории"
