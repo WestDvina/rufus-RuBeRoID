@@ -833,7 +833,7 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 	end = strchr(p, '"');
 	if (end == NULL) { uprintf("JSON parse error: unterminated URL"); goto out; }
 	*end = 0;
-	iso_url = _strdup(p);
+	iso_url = strdup(p);
 	*end = '"';
 
 	if (iso_url == NULL || strlen(iso_url) < 10) {
