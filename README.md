@@ -1,65 +1,88 @@
-Rufus: The Reliable USB Formatting Utility
-==========================================
+# Rufus-RuBeRoID
 
-[![VS2022 Build Status](https://img.shields.io/github/actions/workflow/status/pbatard/rufus/vs2026.yml?branch=master&style=flat-square&label=VS2026%20Build)](https://github.com/pbatard/rufus/actions/workflows/vs2026.yml)
-[![MinGW Build Status](https://img.shields.io/github/actions/workflow/status/pbatard/rufus/mingw.yml?branch=master&style=flat-square&label=MinGW%20Build)](https://github.com/pbatard/rufus/actions/workflows/mingw.yml)
-[![Coverity Scan Status](https://img.shields.io/coverity/scan/2172.svg?style=flat-square&label=Coverity%20Analysis)](https://scan.coverity.com/projects/pbatard-rufus)  
-[![Latest Release](https://img.shields.io/github/release-pre/pbatard/rufus.svg?style=flat-square&label=Latest%20Release)](https://github.com/pbatard/rufus/releases)
+Форк [Rufus](https://github.com/pbatard/rufus) с заменой неработающего FIDO для РФ, РБ и других стран, где Microsoft блокирует генерацию ссылок на ISO.
+
+[![Latest Release](https://img.shields.io/github/release-pre/pbatard/rufus.svg?style=flat-square&label=Rufus%20Release)](https://github.com/pbatard/rufus/releases)
 [![Licence](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square&label=License)](https://www.gnu.org/licenses/gpl-3.0.en.html)
-[![Download Stats](https://img.shields.io/github/downloads/pbatard/rufus/total.svg?label=Downloads&style=flat-square)](https://github.com/pbatard/rufus/releases)
-[![Contributors](https://img.shields.io/github/contributors/pbatard/rufus.svg?style=flat-square&label=Contributors)](https://github.com/pbatard/rufus/graphs/contributors)
 
-![Rufus logo](https://raw.githubusercontent.com/pbatard/rufus/master/res/icons/rufus-128.png)
+---
 
-Rufus is a utility that helps format and create bootable USB flash drives.
+## Проблема
 
-Features
---------
+Microsoft блокирует IP из РФ, РБ и некоторых других стран на CDN-серверах. Встроенный в Rufus скрипт **FIDO** перестал работать, так как не может обойти защиту Sentinel при запросе ссылок на ISO Windows 10/11.
 
-* Format USB, flash card and virtual drives to FAT/FAT32/NTFS/UDF/exFAT/ReFS/ext2/ext3
-* Create DOS bootable USB drives using [FreeDOS](https://www.freedos.org) or MS-DOS
-* Create BIOS or UEFI bootable drives, including [UEFI bootable NTFS](https://github.com/pbatard/uefi-ntfs)
-* Create bootable drives from bootable ISOs (Windows, Linux, etc.)
-* Create bootable drives from bootable disk images, including compressed ones
-* Create Windows 11 installation drives for PCs that don't have TPM or Secure Boot
-* Create [Windows To Go](https://en.wikipedia.org/wiki/Windows_To_Go) drives
-* Create VHD/DD, VHDX and FFU images of an existing drive
-* Create persistent Linux partitions
-* Compute MD5, SHA-1, SHA-256 and SHA-512 checksums of the selected image
-* Perform runtime validation of UEFI bootable media
-* Improve Windows installation experience by automatically setting up OOBE parameters (local account, privacy options, etc.)
-* Perform bad blocks checks, including detection of "fake" flash drives
-* Download official Microsoft Windows 8, Windows 10 or Windows 11 retail ISOs
-* Download [UEFI Shell](https://github.com/pbatard/UEFI-Shell) ISOs
-* Modern and familiar UI, with [38 languages natively supported](https://github.com/pbatard/rufus/wiki/FAQ#What_languages_are_natively_supported_by_Rufus)
-* Small footprint. No installation required.
-* Portable. Secure Boot compatible.
-* 100% [Free Software](https://www.gnu.org/philosophy/free-sw) ([GPL v3](https://www.gnu.org/licenses/gpl-3.0))
+## Решение
 
-Compilation
------------
+В Rufus-RuBeRoID механизм FIDO заменён на **прямое получение ссылок из публичного JSON-файла** в этом репозитории (`iso_links.json`).
 
-Use either Visual Studio 2026 or MinGW and then invoke the `.sln` or `configure`/`make` respectively.
+Файл автоматически обновляется ботом [MS ISO Downloader](https://github.com/WestDvina/ms-iso-downloader), который:
+1. Работает 24/7 на сервере за пределами РФ
+2. Через прокси обходит Sentinel и получает свежие ссылки с CDN Microsoft
+3. Кэширует их (TTL 22 часа)
+4. Публикует в `iso_links.json` в этом репозитории
 
-#### Visual Studio
+## Как это работает
 
-Rufus is an OSI compliant Open Source project. You are entitled to
-download and use the *freely available* [Visual Studio Community Edition](https://www.visualstudio.com/vs/community/)
-to build, run or develop for Rufus. As per the Visual Studio Community Edition license,
-this applies regardless of whether you are an individual or a corporate user.
+```
+Пользователь нажимает "Download" в Rufus-RuBeRoID
+    │
+    ├── Диалог: выберите Windows 10 или 11
+    │   └── Для Win 10: x64 или x86 (Win 11 → только x64)
+    │
+    ├── GET github.com/WestDvina/rufus-RuBeRoID/main/iso_links.json
+    │
+    ├── Парсинг JSON → получение прямой CDN-ссылки
+    │
+    ├── Диалог "Сохранить как" → выбор места для ISO
+    │
+    ├── Скачивание ISO напрямую с CDN Microsoft
+    │
+    └── Rufus записывает ISO на флешку
+```
 
-Additional information
-----------------------
+### Формат `iso_links.json`
 
-Rufus provides extensive information about what it is doing, either through its
-easily accessible log, or through the [Windows debug facility](https://docs.microsoft.com/en-us/sysinternals/downloads/debugview).
+```json
+{
+  "links": {
+    "10_x64": "https://software.download.prss.microsoft.com/...",
+    "10_x86": "https://software.download.prss.microsoft.com/...",
+    "11_x64": "https://software.download.prss.microsoft.com/..."
+  },
+  "published_at": 1783433769,
+  "ttl_hours": 22
+}
+```
 
-* [__Official Website__](https://rufus.ie)
-* [FAQ](https://github.com/pbatard/rufus/wiki/FAQ)
-* [Security and safety measures](https://github.com/pbatard/rufus/wiki/Security)
+## Что изменено в исходном коде
 
-Enhancements/Bugs
------------------
+| Файл | Изменение |
+|------|-----------|
+| `src/net.c` | FIDO (PowerShell + Named Pipe + LZMA) заменён на HTTP-запрос к GitHub JSON + TaskDialog выбора версии/архитектуры |
+| `src/stdlg.c` | Убран `CheckForFidoThread` (скачивание Fido.ver, проверка подписи, запуск PowerShell). Кнопка Download всегда активна |
+| `src/rufus.h` | Добавлен `RUFUS_REPO_RAW` — URL к raw-файлам репо |
 
-Please use the [GitHub issue tracker](https://github.com/pbatard/rufus/issues)
-for reporting problems or suggesting new features.
+## Сборка
+
+```bash
+# Visual Studio 2026
+open rufus.sln → Build Solution
+
+# MinGW
+./configure && make
+```
+
+## Для владельца бота
+
+### `publish_cache.py`
+
+Скрипт в `c:\script\ms-iso-downloader\publish_cache.py`:
+1. Читает `iso_link_cache.json` (кэш бота)
+2. Проверяет TTL — если до протухания < 6 часов, дёргает API бота для обновления
+3. Публикует `iso_links.json` в репо через git push
+
+**Запуск по расписанию:** каждые 6 часов через Планировщик Windows.
+
+## Оригинальный Rufus
+
+Проект [Rufus](https://github.com/pbatard/rufus) — утилита для форматирования и создания загрузочных USB-накопителей. Лицензия GPL v3.
