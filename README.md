@@ -83,6 +83,11 @@ open rufus.sln → Build Solution
 
 **Запуск по расписанию:** каждые 6 часов через Планировщик Windows.
 
-## Оригинальный Rufus
+## Ссылки
 
-Проект [Rufus](https://github.com/pbatard/rufus) — утилита для форматирования и создания загрузочных USB-накопителей. Лицензия GPL v3.
+- Оригинальный Rufus: [github.com/pbatard/rufus](https://github.com/pbatard/rufus)
+- Бот для получения ссылок: [@ms_windows_iso_downloader_bot](https://t.me/ms_windows_iso_downloader_bot)
+- Статья на Дзен: [dzen.ru/a/ajY7jfQQCSpPBgkm](https://dzen.ru/a/ajY7jfQQCSpPBgkm)
+- По вопросам работы бота: [@walgo](https://t.me/walgo)
+
+Лицензия GPL v3.
