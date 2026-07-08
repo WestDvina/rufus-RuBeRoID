@@ -129,13 +129,12 @@ jobs:
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe" || \
           gh release upload "$FORK_TAG" --repo WestDvina/rufus-RuBeRoID \
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe" || true
-          jq -n --arg chat "$TG_CHAT" --arg text "*✅ Rufus-RuBeRoID $FORK_TAG*
-
-Новый релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)
-[Скачать](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG)" \
-            '{chat_id: $chat, parse_mode: "Markdown", text: $text}' | \
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" -d @-
+          printf '%s\n' "*✅ Rufus-RuBeRoID $FORK_TAG*" "" \
+            "Новый релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)" \
+            "[Скачать](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG)" | \
+            jq -Rs --arg chat "$TG_CHAT" '{chat_id: $chat, parse_mode: "Markdown", text: .}' | \
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" -d @-
 
       - name: Notify on upstream changes in protected files
         if: always() && steps.check_protected.outputs.upstream_changed != '' && steps.build.outputs.build_ok == 'true'
@@ -149,13 +148,12 @@ jobs:
           gh issue create \
             --title "Upstream изменил защищённые файлы в $UPSTREAM_TAG" \
             --body "Релиз создан, но upstream изменил наши файлы. Проверьте: $CHANGED" || true
-          jq -n --arg chat "$TG_CHAT" --arg text "*⚠️ Upstream изменил защищённые файлы в $UPSTREAM_TAG*
-
-Файлы: \`$CHANGED\`
-Релиз создан, но проверьте изменения в Issues репозитория" \
-            '{chat_id: $chat, parse_mode: "Markdown", text: $text}' | \
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" -d @- || true
+          printf '%s\n' "*⚠️ Upstream изменил защищённые файлы в $UPSTREAM_TAG*" \
+            "Файлы: \`$CHANGED\`" \
+            "Релиз создан, но проверьте изменения в Issues репозитория" | \
+            jq -Rs --arg chat "$TG_CHAT" '{chat_id: $chat, parse_mode: "Markdown", text: .}' | \
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" -d @- || true
 
       - name: Notify on build failure
         if: steps.build.outputs.build_ok == 'false'
@@ -168,9 +166,8 @@ jobs:
           gh issue create \
             --title "Сборка сломана после слияния $UPSTREAM_TAG" \
             --body "Слияние прошло, но сборка не удалась. Исправьте и запушьте в main." || true
-          jq -n --arg chat "$TG_CHAT" --arg text "*❌ Сборка сломана после слияния $UPSTREAM_TAG*
-
-Смотри Issue в репозитории" \
-            '{chat_id: $chat, parse_mode: "Markdown", text: $text}' | \
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" -d @- || true
+          printf '%s\n' "*❌ Сборка сломана после слияния $UPSTREAM_TAG*" \
+            "Смотри Issue в репозитории" | \
+            jq -Rs --arg chat "$TG_CHAT" '{chat_id: $chat, parse_mode: "Markdown", text: .}' | \
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" -d @- || true
