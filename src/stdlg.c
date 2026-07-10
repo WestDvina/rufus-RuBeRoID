@@ -1755,14 +1755,7 @@ static DWORD WINAPI CheckForDownloadThread(LPVOID param)
 
 void SetFidoCheck(void)
 {
-	// RuBeRoID: We don't need Fido or PowerShell.
-	// Enable the download button if updates are enabled.
-	if (!appstore_version && (ReadSetting32(SETTING_UPDATE_INTERVAL) <= 0)) {
-		ubprintf("Notice: The ISO download feature has been deactivated because "
-			"'Check for updates' is disabled in your settings.");
-		return;
-	}
-
+	// RuBeRoID: Always enable the download button.
 	CreateThread(NULL, 0, CheckForDownloadThread, NULL, 0, NULL);
 }
 
