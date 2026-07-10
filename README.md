@@ -73,4 +73,9 @@ open rufus.sln → Build Solution
 - Статья на Дзен: [dzen.ru/a/ajY7jfQQCSpPBgkm](https://dzen.ru/a/ajY7jfQQCSpPBgkm)
 - По вопросам работы бота: [@walgo](https://t.me/walgo)
 
+## Поддержать проект
+
+- **YooMoney**: [https://yoomoney.ru/to/410016940425865](https://yoomoney.ru/to/410016940425865)
+- **Дзен**: [https://dzen.ru/trick32?donate=true](https://dzen.ru/trick32?donate=true)
+
 Лицензия GPL v3.
