@@ -1798,6 +1798,7 @@ BOOL SetUpdateCheck(void)
 #endif
 		if (!enable_updates) {
 			WriteSetting32(SETTING_UPDATE_INTERVAL, -1);
+			SetFidoCheck();
 			return FALSE;
 		}
 		// If the user hasn't set the interval in the dialog, set to default
