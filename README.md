@@ -1,19 +1,23 @@
 # Rufus-RuBeRoID
 
-Форк [Rufus](https://github.com/pbatard/rufus) с заменой неработающего FIDO для РФ, РБ и других стран, где Microsoft блокирует генерацию ссылок на ISO.
-
-[![Latest Release](https://img.shields.io/github/release-pre/pbatard/rufus.svg?style=flat-square&label=Rufus%20Release)](https://github.com/pbatard/rufus/releases)
+[![Latest Release](https://img.shields.io/github/v/release/WestDvina/rufus-RuBeRoID?style=flat-square&label=Release)](https://github.com/WestDvina/rufus-RuBeRoID/releases)
 [![Licence](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square&label=License)](https://www.gnu.org/licenses/gpl-3.0.en.html)
+
+Форк [Rufus](https://github.com/pbatard/rufus), который исправляет ошибку **«Sentinel marked this request as rejected»** при скачивании ISO Windows 10/11.
 
 ---
 
-## Проблема
+## Ошибка Sentinel в Rufus
 
-Microsoft блокирует IP из РФ, РБ и некоторых других стран на CDN-серверах. Встроенный в Rufus скрипт **FIDO** перестал работать, так как не может обойти защиту Sentinel при запросе ссылок на ISO Windows 10/11.
+При попытке скачать образ Windows 10 или 11 через штатный Rufus программа выдаёт ошибку:
+
+> **Sentinel marked this request as rejected**
+
+Microsoft использует платформу **Sentinel** для защиты от автоматических запросов. Встроенный в Rufus скрипт FIDO (PowerShell) эмулирует браузер, но Sentinel распознаёт это и блокирует генерацию ссылки. В результате скачать ISO напрямую через Rufus стало невозможно.
 
 ## Решение
 
-В Rufus-RuBeRoID механизм FIDO заменён на **прямое получение ссылок из публичного JSON-файла** в этом репозитории (`iso_links.json`). Ссылки автоматически обновляются и публикуются в файл `iso_links.json`.
+В Rufus-RuBeRoID неработающий FIDO заменён на собственный интеллектуальный алгоритм получения ссылок с обходом Sentinel и GEO-блокировки Microsoft. Ссылки доставляются через публичный JSON-файл `iso_links.json` в этом репозитории, который автоматически обновляется Telegram-ботом.
 
 ## Как это работает
 
@@ -29,12 +33,12 @@ Microsoft блокирует IP из РФ, РБ и некоторых други
     │
     ├── Диалог "Сохранить как" → выбор места для ISO
     │
-    ├── Скачивание ISO напрямую с CDN Microsoft
+    ├── Скачивание ISO напрямую с CDN Microsoft (через HTTP)
     │
     └── Rufus записывает ISO на флешку
 ```
 
-### Формат `iso_links.json`
+## Формат `iso_links.json`
 
 ```json
 {
@@ -48,34 +52,21 @@ Microsoft блокирует IP из РФ, РБ и некоторых други
 }
 ```
 
-## Что изменено в исходном коде
+## Что изменено
 
-| Файл | Изменение |
-|------|-----------|
-| `src/net.c` | FIDO (PowerShell + Named Pipe + LZMA) заменён на HTTP-запрос к GitHub JSON + TaskDialog выбора версии/архитектуры |
-| `src/stdlg.c` | Убран `CheckForFidoThread` (скачивание Fido.ver, проверка подписи, запуск PowerShell). Кнопка Download всегда активна |
-| `src/rufus.h` | Добавлен `RUFUS_REPO_RAW` — URL к raw-файлам репо |
-
-## Сборка
-
-```bash
-# Visual Studio 2026
-open rufus.sln → Build Solution
-
-# MinGW
-./configure && make
-```
+| Компонент | Изменение |
+|-----------|-----------|
+| FIDO | Заменён на собственный интеллектуальный алгоритм с обходом Sentinel и GEO-блокировки Microsoft |
+| Проверка обновлений | URL и репозиторий переведены на этот форк |
 
 ## Ссылки
 
-- Оригинальный Rufus: [github.com/pbatard/rufus](https://github.com/pbatard/rufus)
-- Бот для получения ссылок: [@ms_windows_iso_downloader_bot](https://t.me/ms_windows_iso_downloader_bot)
-- Статья на Дзен: [dzen.ru/a/ajY7jfQQCSpPBgkm](https://dzen.ru/a/ajY7jfQQCSpPBgkm)
-- По вопросам работы бота: [@walgo](https://t.me/walgo)
+- **Статья на Дзен** — подробный разбор ошибки: [dzen.ru/a/alAIXnzQxXyhQxMS](https://dzen.ru/a/alAIXnzQxXyhQxMS)
+- **Оригинальный Rufus**: [github.com/pbatard/rufus](https://github.com/pbatard/rufus)
+- **Telegram-бот** для получения свежих ссылок: [@ms_windows_iso_downloader_bot](https://t.me/ms_windows_iso_downloader_bot)
 
 ## Поддержать проект
 
 - **YooMoney**: [https://yoomoney.ru/to/410016940425865](https://yoomoney.ru/to/410016940425865)
-- **Дзен**: [https://dzen.ru/trick32?donate=true](https://dzen.ru/trick32?donate=true)
 
 Лицензия GPL v3.
