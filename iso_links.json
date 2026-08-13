@@ -1,7 +1,9 @@
 {
   "links": {
+    "10_x64": "https://software.download.prss.microsoft.com/dbazure/Win10_22H2_Russian_x64v1.iso?t=807bbc34-9204-41c7-b692-411374ca7bed&P1=1786698809&P2=602&P3=2&P4=Q9Tlmyz%2b%2fjTQDAMijSiEVR38M4nkf0rk%2f6DDXzCzdK0i47eUYnxcxLh6yv18NZ%2bdZti1R04CwhyP6gyCciHz3TYpWN9rq5MgKC32jLCdqm3StiApNEU18PPttbOXOF6o2L8FFKhcaRnCoo0oX1Xs70RQQ77vsE91dpd0DQme4ujH9xx17xxv3pMnhXziImlQS6pmdmmqkYJ46jLWJ7Q3vJ0zbUwq9SD8ekvIs%2bps%2b8k21BvuNANDKTRQXup2T%2b8Pym%2fnBdTNwUSoUa5elhBIts1JcsOX1qmSqBn9Ys4QMEenMc1uqsKA0Q8zOr6vsqrfBmiJRenViZIIOUu8M36EIg%3d%3d",
+    "10_x86": "https://software.download.prss.microsoft.com/dbazure/Win10_22H2_Russian_x32v1.iso?t=807bbc34-9204-41c7-b692-411374ca7bed&P1=1786698809&P2=602&P3=2&P4=YJ3f1vbkWaaAJ4ffKx5LWpBq%2bbBE7t3ibhrilwTS2TuaVxEARAbkm4CxWbX1q7J6U2Gf2cQiPswLfNQrfh1qZv6k9hxLnAfVzIv4XnBkn%2bpbGGcZPq89Ebl8sMH44tTK2yk6yZicRxxmdRI7zOzxjsduXblQig1QYrow3dEWsQ3dqv7gL3wcaFNDcsPsq6ANMk54xSVIxuxWzl8cad5HLvL86N%2bOcIHnQ2Tu9ChMplsdx45b%2bt3%2bx9PpD6OKQFs%2blYFkcWtgoMT8sL1igWULggcXLjMLqrP%2fghV12r4xFLCbNdrwwdEXcfazjDniuB2g2DbHk5ujv2%2fJ2FBe66R0ZA%3d%3d",
     "11_x64": "https://software.download.prss.microsoft.com/dbazure/Win11_25H2_Russian_x64_v2.iso?t=1eb3a97a-7f78-4aa9-bf88-d8e912a8a941&P1=1786668349&P2=602&P3=2&P4=azaX3ZXUCKDdR3PQ4JduZboRwVYK7WrUD303Q13gj56FAShnFzlTLIBLSvhEQCQZgEGM5V%2bCwhGFvLS1%2fge7m6FcZirO%2fCxLGmv961QV5OJ0XBriByT%2b7Yc3lvS1fCYzRCWiHAJ%2f5I9lnZingmo3a%2f7fc%2buohZw3VyNQIEiZGPvZV6jcHpa2cCVeZbjIvlHrYw3OhDX0rTf7ePAT70bWBaUjBv51nkwMFQjYZ0uvt5jL410sf5X5eL5GMmG0rNFblhnwoXUyn%2bJ2aionI9SFZuDc%2fPS1nq43kMjrJWQGaiwXwoSCKjDaqS0V4qCqbtk57pxfDZJjx8TEGcqQDsSiDQ%3d%3d"
   },
-  "published_at": 1786611988.522673,
+  "published_at": 1786612435.8064578,
   "ttl_hours": 22
 }
