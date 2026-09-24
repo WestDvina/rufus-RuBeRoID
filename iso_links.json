@@ -1,7 +1,9 @@
 {
   "links": {
-    "11_x64": "https://software.download.prss.microsoft.com/dbazure/Win11_25H2_Russian_x64_v2.iso?t=cb46796f-1fbe-4301-bd20-3f739afbd54e&P1=1790304447&P2=602&P3=2&P4=tnY9NczSvjEuH7j4OH%2fMLSw2MaqdE%2bvI%2bwnGneVP6G7%2bA1SNl5pBS4mkQwJWNkhqCSu3xG0e4MuaHFTrSQt%2f0X2VBcE7OWzxYZ2p3HRLNBk0O2O9ri1ga8tl%2fHpyY%2bYvXJSXeuBZHGFwDr%2bPZp8b4Qa35guMfxg3vKx9HtpeOKX3%2fgxbZ40gsNZ317mjS4tXnZ%2f46VyzhZbel77bnd9Dp7%2fCc0H%2fZ%2ftamuqPElpz%2fp3vOQ2SMymYQt4jxpdL7I6XLNLsmmv212JfCAGUGdJm2pTawFd8IPDjAIsIcP7Kts1kl%2fEXYaZvGSlCIrQbo989Lvd3tm3yrFCPQoY%2bYW%2bZ3Q%3d%3d"
+    "10_x64": "https://software.download.prss.microsoft.com/dbazure/Win10_22H2_Russian_x64v1.iso?t=741cf371-2266-4b57-baae-b47c260b3108&P1=1790337864&P2=602&P3=2&P4=E1lFb3If9CIpPVaIIrumsyIt%2bZu45agzVI4W8ysZgdvQTKpwEtdfm08aVC8hUQdQOu8u%2bPMWTlmLa7nE3gweOgYq3LNfMjk7ZYfNSYqD6%2b%2fDzDrJ6tUeqVxFCMKMDNTw9mI%2beyYR7n%2bLCuXfh%2f%2f2Wd6v5EoUH9m4u3WEm2Al94806fhAjF2rOJivn92McduJY5RG%2bqqSKp2bzCwPFEcB0eeVCtjwjjTuxfSrHofRdb1D2SGHxtT8m0AoiSorxGSTfFRHTpo4RMqPk0HHHr9az5X%2f12Z0OpyioK54eZR8q8qmpNxyQiKquyySljSh2fCg6udgHTE1FqyWYGGFk%2fVvIA%3d%3d",
+    "10_x86": "https://software.download.prss.microsoft.com/dbazure/Win10_22H2_Russian_x32v1.iso?t=0a7f7a17-a5b9-4fd2-96cc-7987a004a643&P1=1790348210&P2=602&P3=2&P4=hS7K%2fKfUYMCPW7RNJab9ezad7xto%2bCnLsFGqk8cxEc2qYiQP8ZCICXEqa7qC%2f7zcfRlkl9EQl3Y7dafS7MMZEQTB%2b%2f1LlDuogN299JOGcGMpwAq3wqCc4No3DEo1%2fhPpWfsOQBYJN6l%2bJ%2fHs%2f%2fFMdUPWWF4XFTOlTJ4r9bto%2fuTC%2bcwGKdn5Pei1MApYaa3bXWM7Q3zHKBPnBn79G9Kz7SWvuQmdZMLjhH84p0uLeiXq0tRBN7OcIk4Oa3%2fXILTmRfGAJkIeIKZQ30RGvhJPoWni%2bSSVOxfaFtNW1fkrlhG8m6smvQ%2fkt2a3UZUSlYV4UO3pzzZU%2bCCCPQFna7ewHw%3d%3d",
+    "11_x64": "https://software.download.prss.microsoft.com/dbazure/Win11_25H2_Russian_x64_v2.iso?t=7ae707a5-f00b-41df-b2a0-c2e317816bd6&P1=1790305201&P2=602&P3=2&P4=MqB5IgL9KMh%2fMnY3MXAUoiWuskThRK0zXfEWvA1ctwR4mU78N%2fVBXrQdDdMZ%2bO3qOWJWz%2b4zTYYUwXggOk7HJGiXBDmVnAqqlcEU4VH7VFLSjADjCdf2nEseWTIkQXEkqHm1fYp17ZXPTwmDdX2oVeS9IGpfseRLnH3%2fV2MX02KnUwf88DsW3qZBaDJUm86ddfFKz4pqwv6Eg%2fudQOCr7LBaPvZZWw9AXGtEgqNvwUl1BGitrYLtcqw5wADIGVh5X9pBgh3xloADkhPIk0gY5oSOmbboqo%2fvzxrKY7pQg99y44CfnLS1LY4PlJ%2fOiNZ1ObNx2w5w%2f7MUstRLkvVVPw%3d%3d"
   },
-  "published_at": 1790219407.5657938,
+  "published_at": 1790262608.8580084,
   "ttl_hours": 22
 }
