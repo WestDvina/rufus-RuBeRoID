@@ -1,0 +1,51 @@
+name: Build & Release (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v4.15-ruberoid-fix1)"
+        required: true
+      title:
+        description: "Release title"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Build (Release x64)
+        run: |
+          $msbuild = & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.Component.MSBuild -find MSBuild\Current\Bin\MSBuild.exe
+          if (-not $msbuild) { $msbuild = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Current\Bin\MSBuild.exe" }
+          Write-Host "MSBuild: $msbuild"
+          & $msbuild rufus.sln /p:Configuration=Release /p:Platform=x64 /v:minimal
+          if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+          Get-Item x64\Release\rufus.exe | Format-Table Name, Length, LastWriteTime
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ inputs.tag }}"
+          $title = "${{ inputs.title }}"
+          if ([string]::IsNullOrWhiteSpace($title)) { $title = "Rufus-RuBeRoID $tag" }
+          if (git rev-parse "$tag" 2>$null) {
+            Write-Host "Tag $tag already exists, uploading asset to it."
+            gh release upload "$tag" "x64/Release/rufus.exe#Rufus-RuBeRoID-$tag.exe" --clobber
+          } else {
+            gh release create "$tag" --title "$title" `
+              --notes "Исправление кэширования iso_links.json (cache-buster): Rufus всегда забирает свежий список ссылок, включая Windows 11 26H2." `
+              "x64/Release/rufus.exe#Rufus-RuBeRoID-$tag.exe"
+          }

@@ -857,7 +857,10 @@ static DWORD WINAPI DownloadISOThread(LPVOID param)
 
 	json_url = malloc(MAX_PATH);
 	if (json_url == NULL) goto out;
-	safe_sprintf(json_url, MAX_PATH, "%s/%s", RUFUS_REPO_RAW, "iso_links.json");
+	// Cache-buster: WinINet may serve a stale cached copy of iso_links.json
+	// (e.g. from before 11_x64 was added) and raw.githubusercontent.com edge
+	// caches also key on URL, so a unique query forces a fresh fetch.
+	safe_sprintf(json_url, MAX_PATH, "%s/%s?cb=%lld", RUFUS_REPO_RAW, "iso_links.json", (long long)time(NULL));
 
 	PrintInfo(0, MSG_148);
 	SendMessage(hProgress, PBM_SETSTATE, (WPARAM)PBST_NORMAL, 0);
