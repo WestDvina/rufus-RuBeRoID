@@ -1,0 +1,36 @@
+name: Refresh ISO links
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Refresh iso_links.json (merge, never drop keys)
+        shell: powershell
+        run: |
+          .\tools\refresh_iso_links.ps1
+          Get-Content iso_links.json | ConvertFrom-Json | Select-Object -ExpandProperty links |
+            ForEach-Object { $_.PSObject.Properties.Name } | Write-Host
+
+      - name: Commit and push if changed
+        shell: powershell
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add iso_links.json
+          if (git diff --cached --quiet) {
+            Write-Host "No ISO link changes."
+          } else {
+            $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm")
+            git commit -m "Update ISO links [$ts]"
+            git push origin main
+          }
