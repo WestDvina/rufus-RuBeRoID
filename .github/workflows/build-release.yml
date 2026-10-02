@@ -41,7 +41,8 @@ jobs:
           $tag = "${{ inputs.tag }}"
           $title = "${{ inputs.title }}"
           if ([string]::IsNullOrWhiteSpace($title)) { $title = "Rufus-RuBeRoID $tag" }
-          if (git rev-parse --verify --quiet "refs/tags/$tag") {
+          git rev-parse --verify --quiet "refs/tags/$tag"
+          if ($LASTEXITCODE -eq 0) {
             Write-Host "Tag $tag already exists, uploading asset to it."
             gh release upload "$tag" "x64/Release/rufus.exe#Rufus-RuBeRoID-$tag.exe" --clobber
           } else {

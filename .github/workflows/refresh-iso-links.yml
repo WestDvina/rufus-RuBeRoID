@@ -14,20 +14,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Refresh iso_links.json (merge, never drop keys)
-        shell: powershell
+      - name: Refresh iso_links.json (aggregate, never drop keys)
+        shell: pwsh
         run: |
-          .\tools\refresh_iso_links.ps1
-          Get-Content iso_links.json | ConvertFrom-Json | Select-Object -ExpandProperty links |
-            ForEach-Object { $_.PSObject.Properties.Name } | Write-Host
+          pwsh -NoProfile -File .\tools\refresh_iso_links.ps1
 
       - name: Commit and push if changed
-        shell: powershell
+        shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add iso_links.json
-          if (git diff --cached --quiet) {
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
             Write-Host "No ISO link changes."
           } else {
             $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm")
