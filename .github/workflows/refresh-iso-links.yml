@@ -21,6 +21,8 @@ jobs:
 
       - name: Commit and push if changed
         shell: pwsh
+        env:
+          GIT_EDITOR: "true"
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -32,4 +34,17 @@ jobs:
             $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm")
             git commit -m "Update ISO links [$ts]"
             git push origin main
+            if ($LASTEXITCODE -ne 0) {
+              # Remote moved (e.g. bot pushed meanwhile): rebase and keep our
+              # merged file (it is a superset by design: keys are never dropped).
+              Write-Host "Push rejected, rebasing onto origin/main..."
+              git pull --rebase origin main
+              if ($LASTEXITCODE -ne 0) {
+                git checkout --ours -- iso_links.json
+                git add iso_links.json
+                git rebase --continue
+              }
+              git push origin main
+              if ($LASTEXITCODE -ne 0) { throw "Push failed after rebase" }
+            }
           }
