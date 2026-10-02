@@ -63,11 +63,13 @@ function Get-ShiferCandidates {
     Write-Warning "ShiFER fetch failed: $($_.Exception.Message)"
     return $result
   }
-  $now = [DateTimeOffset]::UtcNow
+  $nowUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
   foreach ($e in $data) {
     try {
       if (-not $e.is_valid) { continue }
-      if ([datetime]$e.valid_until -le $now) { continue }
+      # Compare as unix seconds: [datetime] vs [DateTimeOffset] comparison throws.
+      $exp = [long]([DateTimeOffset][datetime]$e.valid_until).ToUnixTimeSeconds()
+      if ($exp -le $nowUnix) { continue }
       $os = [string]$e.version.os
       $arch = [string]$e.version.arch
       $lang = [string]$e.version.lang
@@ -77,7 +79,6 @@ function Get-ShiferCandidates {
       elseif ($os -eq 'win10' -and $arch -eq 'x86') { $key = '10_x86' }
       elseif ($os -eq 'win11' -and $arch -eq 'x64') { $key = '11_x64' }
       if (-not $key) { continue }
-      $exp = [long]([DateTimeOffset][datetime]$e.valid_until).ToUnixTimeSeconds()
       if (-not $result.ContainsKey($key)) { $result[$key] = @() }
       $result[$key] += @{ Url = [string]$e.iso_url; Expires = $exp; Build = [string]$e.version.build; Source = 'shifer' }
     } catch { continue }
