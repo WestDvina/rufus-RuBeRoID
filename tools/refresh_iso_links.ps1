@@ -20,6 +20,21 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Skip direct Microsoft fetch for keys that already have a HEAD-valid candidate
+# with more than this many hours of life left (don't burn Sentinel sessions).
+$FRESH_ENOUGH_HOURS = 8.0
+# Delay between consecutive Microsoft fetches (don't burst into Sentinel).
+$FETCH_SLEEP_SEC = 20
+# Random startup delay so CI runs and bot publishes don't spike together.
+$START_JITTER_SEC = 180
+
+$script:SentinelTripped = $false
+
+function Test-SentinelSignal {
+  param([string]$Text)
+  return ($Text -match 'Sentinel' -or $Text -match '715-123130')
+}
+
 function Get-UrlExpiry {
   # Approximate expiry of a signed prss.microsoft.com URL: P1 query = unix time.
   param([string]$Url)
@@ -40,11 +55,18 @@ function Get-FidoUrl {
   param([string]$Win, [string]$Rel, [string]$Ed, [string]$Lang, [string]$Arch, [string]$FidoPath)
   for ($i = 1; $i -le $MaxAttempts; $i++) {
     try {
-      $u = & powershell -NoProfile -ExecutionPolicy Bypass -File $FidoPath `
+      $raw = & powershell -NoProfile -ExecutionPolicy Bypass -File $FidoPath `
         -Win $Win -Rel $Rel -Ed $Ed -Lang $Lang -Arch $Arch -GetUrl 2>&1 |
-        Where-Object { $_ -match '^https://' } | Select-Object -First 1
+        Out-String
+      if (Test-SentinelSignal $raw) {
+        # Ban signal: no retries, stop all further Microsoft fetches this run.
+        Write-Warning "Fido ($Win/$Rel/$Arch): SENTINEL BLOCKED, stopping direct fetches."
+        $script:SentinelTripped = $true
+        return $null
+      }
+      $u = ($raw -split "`r?`n" | Where-Object { $_ -match '^https://' } | Select-Object -First 1)
       if ($u -match '^https://software\.download\.prss\.microsoft\.com/') { return $u.Trim() }
-      Write-Warning "Fido attempt $i ($Win/$Rel/$Arch): no URL (Sentinel or empty)."
+      Write-Warning "Fido attempt $i ($Win/$Rel/$Arch): no URL (empty)."
     } catch {
       Write-Warning "Fido attempt $i ($Win/$Rel/$Arch) failed: $($_.Exception.Message)"
     }
@@ -91,6 +113,10 @@ $data = Get-Content $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $links = @{}
 foreach ($p in $data.links.PSObject.Properties) { $links[$p.Name] = $p.Value }
 
+$jitter = Get-Random -Maximum $START_JITTER_SEC
+Write-Host "Startup jitter: sleeping ${jitter}s (avoid piling onto MS with bot)..."
+Start-Sleep -Seconds $jitter
+
 # --- Source B: ShiFER ---
 $shifer = Get-ShiferCandidates -Url $ShiferUrl
 foreach ($k in $shifer.Keys) {
@@ -113,9 +139,30 @@ $targets = @(
 $fidoFound = @{}
 if ($fido) {
   foreach ($t in $targets) {
+    # Skip direct fetch if a HEAD-valid candidate with enough life already exists.
+    $haveFresh = $false
+    $cands = @()
+    if ($links.ContainsKey($t.Key) -and $links[$t.Key]) {
+      $cands += @{ Url = $links[$t.Key]; Expires = (Get-UrlExpiry $links[$t.Key]) }
+    }
+    if ($shifer.ContainsKey($t.Key)) { $cands += $shifer[$t.Key] }
+    $nowUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    foreach ($c in ($cands | Sort-Object -Property Expires -Descending)) {
+      $leftH = ([long]$c.Expires - $nowUnix) / 3600
+      if ($leftH -gt $FRESH_ENOUGH_HOURS -and (Test-IsoUrl $c.Url)) {
+        Write-Host ("Skipping Fido for {0}: fresh candidate alive ({1:0}h left)." -f $t.Key, $leftH)
+        $haveFresh = $true
+        break
+      }
+    }
+    if ($haveFresh) { continue }
+    if ($script:SentinelTripped) {
+      Write-Warning "Skipping Fido for $($t.Key): Sentinel tripped earlier this run."
+      continue
+    }
     $url = Get-FidoUrl -Win $t.Win -Rel $t.Rel -Ed $t.Ed -Lang $t.Lang -Arch $t.Arch -FidoPath $fido
     if ($url) { $fidoFound[$t.Key] = $url; Write-Host "Fido candidate for $($t.Key): P1=$(Get-UrlExpiry $url)" }
-    Start-Sleep -Seconds 5  # avoid Sentinel rate-limit between SKUs
+    Start-Sleep -Seconds $FETCH_SLEEP_SEC  # don't burst into Sentinel
   }
 }
 
@@ -166,4 +213,5 @@ $out | ConvertTo-Json -Depth 5 | Set-Content $jsonPath -Encoding UTF8
 $check = Get-Content $jsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
 Write-Host "Keys in file: $(($check.links.PSObject.Properties.Name) -join ', ')"
 Write-Host "Updated: $($updated -join ', '); kept: $($kept -join ', ')"
+if ($script:SentinelTripped) { Write-Warning "Sentinel was tripped this run: direct fetches paused, reuse only." }
 exit 0
