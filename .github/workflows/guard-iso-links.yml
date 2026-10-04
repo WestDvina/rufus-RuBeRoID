@@ -1,0 +1,73 @@
+name: Guard ISO links
+
+# Safety net: if any push drops a key from iso_links.json (e.g. a writer
+# overwrote the file instead of merging), restore the dropped key from
+# history as long as its URL is still HEAD-valid. Loop-safe: skips runs
+# triggered by its own commits.
+on:
+  push:
+    branches: [main]
+    paths: [iso_links.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Restore dropped keys
+        shell: pwsh
+        run: |
+          $file = 'iso_links.json'
+          $cur = Get-Content $file -Raw -Encoding UTF8 | ConvertFrom-Json
+          $curKeys = @($cur.links.PSObject.Properties.Name)
+          Write-Host "Current keys: $($curKeys -join ', ')"
+          $restored = @()
+          $history = git log --all --format='%H' -- $file
+          foreach ($key in @('10_x64', '10_x86', '11_x64')) {
+            if ($key -in $curKeys) { continue }
+            Write-Warning "Key $key missing, searching history..."
+            foreach ($sha in $history) {
+              $txt = git show "${sha}:${file}" 2>$null | Out-String
+              if (-not $txt.Trim()) { continue }
+              $old = $txt | ConvertFrom-Json
+              $url = $old.links.$key
+              if (-not $url) { continue }
+              try {
+                $h = Invoke-WebRequest -Uri $url -Method Head -TimeoutSec 30 -UseBasicParsing
+                if ([int]$h.StatusCode -eq 200) {
+                  $cur.links | Add-Member -NotePropertyName $key -NotePropertyValue $url -Force
+                  $restored += $key
+                  Write-Host "Restored $key from $sha (HEAD 200)."
+                  break
+                }
+              } catch { continue }
+            }
+            if ($key -notin $restored) { Write-Warning "No live URL found for $key in history." }
+          }
+          if ($restored.Count -eq 0) {
+            Write-Host 'Nothing to restore.'
+            exit 0
+          }
+          $cur.published_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+          $cur | ConvertTo-Json -Depth 5 | Set-Content $file -Encoding UTF8
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add $file
+          git commit -m "Guard: restore dropped ISO link(s) [$($restored -join ', ')]"
+          git push origin main
+
+      - name: Report key set
+        shell: pwsh
+        run: |
+          $cur = Get-Content iso_links.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $missing = @('10_x64', '10_x86', '11_x64') | Where-Object { $_ -notin $cur.links.PSObject.Properties.Name }
+          if ($missing) { throw "Keys still missing after guard: $($missing -join ', ')" }
+          Write-Host "All required keys present: $((@($cur.links.PSObject.Properties.Name)) -join ', ')"
