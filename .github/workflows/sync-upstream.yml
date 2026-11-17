@@ -33,7 +33,9 @@ jobs:
           echo "upstream_tag=$LATEST_UPSTREAM" >> $GITHUB_OUTPUT
           if [ -z "$LATEST_UPSTREAM" ]; then
             echo "new_tag=false" >> $GITHUB_OUTPUT
-          elif git tag -l "${LATEST_UPSTREAM}-ruberoid" | grep -q .; then
+            exit 0
+          fi
+          if git tag -l "${LATEST_UPSTREAM}-ruberoid" | grep -q .; then
             echo "Fork tag ${LATEST_UPSTREAM}-ruberoid already exists, skipping"
             echo "new_tag=false" >> $GITHUB_OUTPUT
           else
@@ -50,6 +52,7 @@ jobs:
         shell: bash
     outputs:
       build_ok: ${{ steps.build.outputs.build_ok }}
+      unresolved: ${{ steps.merge.outputs.unresolved }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -60,11 +63,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config merge.ours.driver true
 
       - name: Fetch upstream
         run: |
-          git remote add upstream https://github.com/pbatard/rufus.git
+          git remote add upstream https://github.com/pbatard/rufus.git || true
           git fetch upstream --tags --force
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
           if ! git rev-parse -q --verify "refs/tags/$UPSTREAM_TAG^{commit}" > /dev/null; then
@@ -106,13 +108,58 @@ jobs:
             git show "refs/tags/$UPSTREAM_TAG:$f" > "/tmp/upstream_$(echo $f | tr '/' '_')" 2>/dev/null || true
           done
 
+      # Merges upstream. Conflicts that always resolve the same way are fixed
+      # automatically; anything else (branding, fork patches) fails the job
+      # loudly instead of silently skipping the release.
       - name: Merge upstream
         id: merge
         run: |
           git checkout main
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
+
+          set +e
           git merge --no-edit "refs/tags/$UPSTREAM_TAG"
-          echo "merge_ok=true" >> $GITHUB_OUTPUT
+          MERGE_RC=$?
+          set -e
+
+          if [ "$MERGE_RC" -eq 0 ]; then
+            echo "Merge clean or already up to date"
+            echo "unresolved=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Merge produced conflicts - applying predictable resolutions"
+
+          # 1. Upstream CI workflows we intentionally deleted in the fork.
+          for f in .github/workflows/coverity.yml .github/workflows/lock.yml \
+                   .github/workflows/mingw.yml .github/workflows/setup.yml \
+                   .github/workflows/vs2026.yml; do
+            git rm -q --ignore-unmatch "$f" || true
+          done
+
+          # 2. .gitattributes - upstream rules verbatim (no merge=ours: it hid
+          #    upstream API changes in the protected files).
+          if git ls-files -u -- .gitattributes | grep -q .; then
+            git checkout --theirs -- .gitattributes
+            git add .gitattributes
+          fi
+
+          # 3. .vs/rufus.vcxproj - upstream project file, our toolset (v143).
+          if git ls-files -u -- .vs/rufus.vcxproj | grep -q .; then
+            git checkout --theirs -- .vs/rufus.vcxproj
+            sed -i 's#<PlatformToolset>v145</PlatformToolset>#<PlatformToolset>v143</PlatformToolset>#g' .vs/rufus.vcxproj
+            git add -f .vs/rufus.vcxproj
+          fi
+
+          UNRESOLVED=$(git diff --name-only --diff-filter=U)
+          if [ -n "$UNRESOLVED" ]; then
+            echo "unresolved=$UNRESOLVED" >> $GITHUB_OUTPUT
+            echo "::error::Unresolved merge conflicts: $UNRESOLVED - resolve manually on main (see .gitattributes / rufus.rc branding / protected files)"
+            exit 1
+          fi
+          echo "unresolved=" >> $GITHUB_OUTPUT
+          git commit --no-edit
+          echo "Merge committed"
 
       - name: Build (Release x64)
         id: build
@@ -131,23 +178,41 @@ jobs:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          git push origin main
           UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
           FORK_TAG="${UPSTREAM_TAG}-ruberoid"
+
+          # main moves every 30 min (iso_links.json bot), so retry on rejection.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if ! git rebase origin/main; then
+              git rebase --abort
+              echo "::error::Could not rebase on origin/main"
+              exit 1
+            fi
+            if git push origin main; then
+              echo "Pushed main (attempt $attempt)"
+              break
+            fi
+            echo "Push rejected (attempt $attempt), retrying"
+            sleep 5
+          done
+
           git tag -f "$FORK_TAG" -m "Rufus-RuBeRoID based on upstream $UPSTREAM_TAG"
           git push -f origin "$FORK_TAG"
+
           gh release create "$FORK_TAG" --repo WestDvina/rufus-RuBeRoID \
             --title "Rufus-RuBeRoID $FORK_TAG" \
             --notes "Автоматический релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)." \
             "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe" || \
           gh release upload "$FORK_TAG" --repo WestDvina/rufus-RuBeRoID \
-            "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe" || true
+            "x64/Release/rufus.exe#Rufus-RuBeRoID-$FORK_TAG.exe" --clobber || true
+
           printf '%s\n' "*✅ Rufus-RuBeRoID $FORK_TAG*" "" \
             "Новый релиз на основе [$UPSTREAM_TAG](https://github.com/pbatard/rufus/releases/tag/$UPSTREAM_TAG)" \
             "[Скачать](https://github.com/WestDvina/rufus-RuBeRoID/releases/tag/$FORK_TAG)" | \
             jq -Rs --arg chat "$TG_CHAT" '{chat_id: $chat, parse_mode: "Markdown", text: .}' | \
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -H "Content-Type: application/json" -d @-
+              -H "Content-Type: application/json" -d @- || true
 
       - name: Notify on upstream changes in protected files
         if: always() && steps.check_protected.outputs.upstream_changed != '' && steps.build.outputs.build_ok == 'true'
@@ -164,6 +229,25 @@ jobs:
           printf '%s\n' "*⚠️ Upstream изменил защищённые файлы в $UPSTREAM_TAG*" \
             "Файлы: \`$CHANGED\`" \
             "Релиз создан, но проверьте изменения в Issues репозитория" | \
+            jq -Rs --arg chat "$TG_CHAT" '{chat_id: $chat, parse_mode: "Markdown", text: .}' | \
+            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" -d @- || true
+
+      - name: Notify on merge failure
+        if: failure() && steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          UPSTREAM_TAG="${{ needs.check-upstream.outputs.upstream_tag }}"
+          UNRESOLVED="${{ steps.merge.outputs.unresolved }}"
+          gh issue create \
+            --title "Слияние $UPSTREAM_TAG не удалось" \
+            --body "Конфликты, которые workflow не умеет разрешать автоматически: \`$UNRESOLVED\`. Разрешите вручную в main (см. .gitattributes / брендинг rufus.rc / защищённые файлы)." || true
+          printf '%s\n' "*❌ Слияние $UPSTREAM_TAG не удалось*" \
+            "Конфликты: \`$UNRESOLVED\`" \
+            "Релиз не собран, нужна ручная правка" | \
             jq -Rs --arg chat "$TG_CHAT" '{chat_id: $chat, parse_mode: "Markdown", text: .}' | \
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -H "Content-Type: application/json" -d @- || true
