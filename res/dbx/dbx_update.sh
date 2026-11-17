@@ -19,13 +19,13 @@ get_commit_date() {
 # Also use api.github.com (which is rate limited) so we don't get the stupid 404 GitHub page on error, which is 10
 # times larger than our largest DBX update binary...
 declare -a dbx_urls=(
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/x86/DBXUpdate.bin'
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/amd64/DBXUpdate.bin'
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/arm/DBXUpdate.bin'
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/arm64/DBXUpdate.bin'
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/ia64/DBXUpdate.bin'
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/riscv64/DBXUpdate.bin'
-  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/loongarch64/DBXUpdate.bin'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_ia32.efiauth2'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_arm.efiauth2'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_aarch64.efiauth2'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_ia64.efiauth2'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_riscv64.efiauth2'
+  'https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_loongarch64.efiauth2'
 )
 
 cat << EOF > dbx_info.h

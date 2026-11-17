@@ -1507,24 +1507,19 @@ BOOL AnalyzePBR(HANDLE hLogicalVolume)
 
 /*
  * This call returns the offset of the first ESP partition found
- * on the relevant drive, or 0ULL if no ESP was found.
+ * on the relevant drive, or -1 if no ESP was found.
  */
-uint64_t GetEspOffset(DWORD DriveIndex)
+int64_t GetEspOffset(HANDLE hPhysical)
 {
-	uint64_t ret = 0ULL;
+	int64_t ret = -1;
 	BOOL r;
-	HANDLE hPhysical;
 	DWORD size, i;
 	BYTE layout[4096] = { 0 };
 	PDRIVE_LAYOUT_INFORMATION_EX DriveLayout = (PDRIVE_LAYOUT_INFORMATION_EX)(void*)layout;
 
-	hPhysical = GetPhysicalHandle(DriveIndex, FALSE, TRUE, TRUE);
-	if (hPhysical == INVALID_HANDLE_VALUE)
-		return FALSE;
-
 	r = DeviceIoControl(hPhysical, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, NULL, 0, layout, sizeof(layout), &size, NULL);
 	if (!r || size <= 0) {
-		uprintf("Could not get layout for drive 0x%02x: %s", DriveIndex, WindowsErrorString());
+		uprintf("Could not get drive layout: %s", WindowsErrorString());
 		goto out;
 	}
 
@@ -1537,7 +1532,6 @@ uint64_t GetEspOffset(DWORD DriveIndex)
 	}
 
 out:
-	safe_closehandle(hPhysical);
 	return ret;
 }
 
@@ -1731,10 +1725,33 @@ out:
 }
 
 // This is a crude attempt at detecting file systems through their superblock magic.
-// Note that we only attempt to detect the file systems that Rufus can format as
-// well as a couple other maintsream ones.
 const char* GetFsName(HANDLE hPhysical, LARGE_INTEGER StartingOffset)
 {
+	typedef struct {
+		const char* name;
+		const uint8_t magic[4];
+	} magic_type;
+	const magic_type magic_types[] = {
+		{ "SquashFS", { 'h', 's', 'q', 's' } },
+		{ "CramFS", { 0x45, 0x3D, 0xCD, 0x28 } },
+		{ "XFS", { 'X', 'F', 'S', 'B' } },
+		{ "LUKS", { 'L', 'U', 'K', 'S' } },
+		{ "MD RAID", { 0xFC, 0x4E, 0x2B, 0xA9 } },
+		{ "U-Boot Legacy uImage", { 0x27, 0x05, 0x19, 0x56 } },
+		{ "Device Tree/U-Boot FIT", { 0xD0, 0x0D, 0xFE, 0xED } },
+		{ "Device Tree Overlay", { 0xD7, 0xB7, 0xAB, 0x1E } },
+		{ "Android Sparse Image", { 0x3A, 0xFF, 0x26, 0xED } },
+		{ "Android Verified Boot", { 'A', 'V', 'B', '0' } },
+		{ "Qualcomm Device Tree", { 'Q', 'C', 'D', 'T' } },
+		{ "Rockchip Resource Image", { 'R', 'S', 'C', 'E' } },
+		{ "Rockchip Kernel Image", { 'K', 'R', 'N', 'L' } },
+		{ "Rockchip Parameter Image", { 'P', 'A', 'R', 'M' } },
+		{ "Rockchip Firmware Image", { 'R', 'K', 'F', 'W' } },
+		{ "Amlogic Image", { '@', 'A', 'M', 'L' } },
+		{ "Allwinner Image", { 'e', 'G', 'O', 'N' } },
+		{ "Mediatek Image", { 0x88, 0x16, 0x88, 0x58 } },
+		{ "Mediatek Extension", { 0x88, 0x16, 0x89, 0x58 } },
+	};
 	typedef struct {
 		const char* name;
 		const uint8_t magic[8];
@@ -1759,23 +1776,28 @@ const char* GetFsName(HANDLE hPhysical, LARGE_INTEGER StartingOffset)
 		{ 0x00000013, 0x0000004C, 0x0003F780 }
 	};
 	const char* ext_names[] = { "ext", "ext2", "ext3", "ext4" };
+	const uint8_t erofs_magic[4] = { 0xE2, 0xE1, 0xF5, 0xE0 };
+	const uint8_t f2fs_magic[4] = { 0x10, 0x20, 0xF5, 0xF2 };
 	const char* ret = "(Unrecognized)";
 	DWORD i, j, offset, size, sector_size = 512;
 	uint8_t* buf = calloc(sector_size, 1);
 	if (buf == NULL)
 		goto out;
 
-	// 1. Try to detect ISO9660/FAT/exFAT/NTFS/ReFS/SquashFS through the 512 bytes superblock at offset 0
+	// 1. Detect magic-based file systems through the 512 bytes superblock at offset 0
 	if (!SetFilePointerEx(hPhysical, StartingOffset, NULL, FILE_BEGIN))
 		goto out;
 	if (!ReadFile(hPhysical, buf, sector_size, &size, NULL) || size != sector_size)
 		goto out;
-	if (memcmp("hsqs", buf, 4) == 0) {
-		ret = "SquashFS";
-		goto out;
-	}
 	if (strncmp("CD001", &buf[0x01], 5) == 0) {
 		ret = "ISO9660";
+		goto out;
+	}
+	for (i = 0; i < ARRAYSIZE(magic_types); i++)
+		if (memcmp(buf, magic_types[i].magic, 4) == 0)
+			break;
+	if (i < ARRAYSIZE(magic_types)) {
+		ret = magic_types[i].name;
 		goto out;
 	}
 
@@ -1825,8 +1847,8 @@ const char* GetFsName(HANDLE hPhysical, LARGE_INTEGER StartingOffset)
 		goto out;
 	}
 
-	// 3. Try to detect ext2/ext3/ext4 through the 512 bytes superblock at offset 1024
-	// We're already at the right offset
+	// 3. Try to detect ext2/ext3/ext4/EROFS/F2FS through the 512 bytes superblock at
+	// offset 1024 (which StartingOffset already points to)
 	if (!SetFilePointerEx(hPhysical, StartingOffset, NULL, FILE_BEGIN))
 		goto out;
 	if (!ReadFile(hPhysical, buf, sector_size, &size, NULL) || size != sector_size)
@@ -1843,6 +1865,14 @@ const char* GetFsName(HANDLE hPhysical, LARGE_INTEGER StartingOffset)
 		assert(rev < ARRAYSIZE(ext_names));
 		if (rev < ARRAYSIZE(ext_names))
 			ret = ext_names[rev];
+		goto out;
+	}
+	if (memcmp(buf, erofs_magic, 4) == 0) {
+		ret = "EROFS";
+		goto out;
+	}
+	if (memcmp(buf, f2fs_magic, 4) == 0) {
+		ret = "F2FS";
 		goto out;
 	}
 
@@ -2010,7 +2040,7 @@ BOOL GetDrivePartitionData(DWORD DriveIndex, char* FileSystemName, DWORD FileSys
 			if (i < MAX_PARTITIONS) {
 				SelectedDrive.Partition[i].Offset = DriveLayout->PartitionEntry[i].StartingOffset.QuadPart;
 				SelectedDrive.Partition[i].Size = DriveLayout->PartitionEntry[i].PartitionLength.QuadPart;
-				wcscpy(SelectedDrive.Partition[i].Name, DriveLayout->PartitionEntry[i].Gpt.Name);
+				wcsncpy_s(SelectedDrive.Partition[i].Name, 36, DriveLayout->PartitionEntry[i].Gpt.Name, _TRUNCATE);
 			}
 			SelectedDrive.nPartitions++;
 			isUefiNtfs = (wcscmp(DriveLayout->PartitionEntry[i].Gpt.Name, L"UEFI:NTFS") == 0);
@@ -2288,7 +2318,7 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 	// Go for a 260 MB sized ESP by default to keep everyone happy, including 4K sector users:
 	// https://docs.microsoft.com/en-us/windows-hardware/manufacture/desktop/configure-uefigpt-based-hard-drive-partitions
 	// and folks using MacOS: https://github.com/pbatard/rufus/issues/979
-	LONGLONG esp_size = 260 * MB;
+	LONGLONG esp_size = 260 * MB, main_size;
 	LONGLONG ClusterSize = (LONGLONG)ComboBox_GetCurItemData(hClusterSize);
 
 	PrintInfoDebug(0, MSG_238, PartitionTypeName[partition_style]);
@@ -2406,9 +2436,12 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 		last_offset = SelectedDrive.Partition[i].Offset;
 	}
 
-	// With the above, Compute the main partition size (which we align to a track)
-	assert(last_offset > SelectedDrive.Partition[mi].Offset);
-	SelectedDrive.Partition[mi].Size = FLOOR_ALIGN(last_offset - SelectedDrive.Partition[mi].Offset, bytes_per_track);
+	// With the above, compute the main partition size (which we align to a track)
+	main_size = last_offset - SelectedDrive.Partition[mi].Offset;
+	assert(main_size > 0);
+	if (write_as_esp)
+		main_size = min(main_size, MAX_ISO_TO_ESP_SIZE);
+	SelectedDrive.Partition[mi].Size = FLOOR_ALIGN(main_size, bytes_per_track);
 	// Try to make sure that the main partition size is a multiple of the cluster size
 	// This can be especially important when trying to capture an NTFS partition as FFU, as, when
 	// the NTFS partition is aligned to cluster size, the FFU capture parses the NTFS allocated
@@ -2493,7 +2526,7 @@ BOOL CreatePartition(HANDLE hDrive, int partition_style, int file_system, BOOL m
 			else
 				DriveLayoutEx.PartitionEntry[i].Gpt.PartitionType = PARTITION_MICROSOFT_DATA;
 			IGNORE_RETVAL(CoCreateGuid(&DriveLayoutEx.PartitionEntry[i].Gpt.PartitionId));
-			wcscpy(DriveLayoutEx.PartitionEntry[i].Gpt.Name, SelectedDrive.Partition[i].Name);
+			wcsncpy_s(DriveLayoutEx.PartitionEntry[i].Gpt.Name, 36, SelectedDrive.Partition[i].Name, _TRUNCATE);
 		}
 	}
 

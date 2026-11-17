@@ -88,6 +88,7 @@ static str_score_t str_score[] = {
 };
 
 static str_score_t str_adjust[] = {
+	{ "SSK Port able", -20 },
 	{ "Gadget", -10 },
 	{ "Flash", -10 },
 	{ "SD-CARD", -10 },
@@ -95,7 +96,7 @@ static str_score_t str_adjust[] = {
 	{ "HDD", +20 },
 	{ "SATA", +20 },
 	{ "SCSI", +20 },
-	{ "SSD", +20 }
+	{ "SSD", +20 },
 };
 
 /* The lists belows set a score according to VID & VID:PID
@@ -209,6 +210,7 @@ static vidpid_score_t vidpid_score[] = {
 	{ 0x0c0b, 0xb159, 10 },		// Dura Micro 509
 	// Meh
 	{ 0x0e21, 0x0510, 5 },		// Cowon iAudio X5
+	{ 0x1058, 0x0702, 5 },		// WD 1200BEVExternal HDD
 	{ 0x11b0, 0x6298, 10 },		// Enclosure from Kingston SSDNow notebook upgrade kit
 	// NOT in VID list as plenty of UFDs
 	{ 0x125f, 0xa93a, 10 },		// A-DATA SH93

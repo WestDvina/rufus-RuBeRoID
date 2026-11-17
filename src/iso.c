@@ -86,6 +86,9 @@ RUFUS_IMG_REPORT img_report;
 FILE* fd_md5sum = NULL;
 int64_t iso_blocking_status = -1;
 uint64_t total_blocks, extra_blocks, nb_blocks, last_nb_blocks;
+#ifdef VALIDATE_SAME_VOLUME
+char target_volume[64] = { 0 };
+#endif
 
 extern uint64_t md5sum_totalbytes;
 extern BOOL preserve_timestamps, enable_ntfs_compression, validate_md5sum;
@@ -133,6 +136,7 @@ static uint32_t md5sum_size = 0;
 static BOOL scan_only = FALSE;
 static StrArray config_path, isolinux_path, grub_filesystems;
 static char symlinked_syslinux[MAX_PATH], *md5sum_data = NULL, *md5sum_pos = NULL;
+static iso_extension_mask_t iso_extension_mask = ISO_EXTENSION_ALL;
 
 // Ensure filenames do not contain invalid FAT32 or NTFS characters
 static __inline char* sanitize_filename(char* filename, BOOL* is_identical)
@@ -160,9 +164,10 @@ static __inline char* sanitize_filename(char* filename, BOOL* is_identical)
 	return ret;
 }
 
-static void log_handler (cdio_log_level_t level, const char *message)
+void libcdio_log_handler(cdio_log_level_t level, const char *message)
 {
-	uprintf("libcdio: %s", message);
+	if (usb_debug || !scan_only)
+		uprintf("libcdio: %s", message);
 }
 
 // Returns TRUE if a path appears in md5sum.txt
@@ -180,7 +185,8 @@ static BOOL is_in_md5sum(char* path)
 		return FALSE;
 
 	// We should have a "X:/xyz" path
-	assert(path[1] == ':' && path[2] == '/');
+	if_assert_fails(path[1] == ':' && path[2] == '/')
+		return FALSE;
 
 	// Modify the path to have " ./xyz"
 	c[0] = path[0];
@@ -220,19 +226,16 @@ static BOOL is_in_md5sum(char* path)
 
 static void _print_extracted_file(char* psz_fullpath, uint64_t file_length, BOOL split)
 {
-	size_t nul_pos;
+	char psz_display[MAX_PATH + 24];
 
 	if (psz_fullpath == NULL)
 		return;
 	// Replace slashes with backslashes and append the size to the path for UI display
 	to_windows_path(psz_fullpath);
-	nul_pos = strlen(psz_fullpath);
-	safe_sprintf(&psz_fullpath[nul_pos], 24, " (%s)", SizeToHumanReadable(file_length, TRUE, FALSE));
-	uprintf(split ? "Splitting: %s" : "Extracting: %s", psz_fullpath);
-	safe_sprintf(&psz_fullpath[nul_pos], 24, " (%s)", SizeToHumanReadable(file_length, FALSE, FALSE));
-	PrintStatus(0, MSG_000, psz_fullpath);	// MSG_000 is "%s"
-	// Remove the appended size for extraction
-	psz_fullpath[nul_pos] = 0;
+	static_sprintf(psz_display, "%s (%s)", psz_fullpath, SizeToHumanReadable(file_length, TRUE, FALSE));
+	uprintf(split ? "Splitting: %s" : "Extracting: %s", psz_display);
+	static_sprintf(psz_display, "%s (%s)", psz_fullpath, SizeToHumanReadable(file_length, FALSE, FALSE));
+	PrintStatus(0, MSG_000, psz_display);
 	// ISO9660 cannot handle backslashes
 	to_unix_path(psz_fullpath);
 	// Update md5sum_totalbytes as needed
@@ -310,7 +313,8 @@ static BOOL check_iso_props(const char* psz_dirname, int64_t file_length, const 
 						dst[strlen(dst) - 3] = 's';
 						dst[strlen(dst) - 2] = 'w';
 						dst[strlen(dst) - 1] = 'm';
-						assert(safe_strlen(image_path) + safe_strlen(psz_dirname) + safe_strlen(psz_basename) + 2 < ARRAYSIZE(wim_path));
+						if_assert_fails(safe_strlen(image_path) + safe_strlen(psz_dirname) + safe_strlen(psz_basename) + 2 < ARRAYSIZE(wim_path))
+							return FALSE;
 						static_sprintf(wim_path, "%s|%s/%s", image_path, psz_dirname, psz_basename);
 						WimSplitFile(wim_path, dst);
 						free(dst);
@@ -710,8 +714,8 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 			for (i = 0; i < NB_OLD_C32; i++) {
 				if (props.is_old_c32[i] && use_own_c32[i]) {
 					static_sprintf(tmp, "%s/syslinux-%s/%s", FILES_DIR, embedded_sl_version_str[0], old_c32_name[i]);
-					if (CopyFileU(tmp, psz_fullpath, FALSE)) {
-						uprintf("  Replaced with local version %s", IsFileInDB(tmp)?"✓":"✗");
+					if (copy_signed_file(tmp, psz_fullpath)) {
+						uprintf("  Replaced with local version %s", IsFileInDB(tmp) ? "✓" : "✗");
 						break;
 					}
 					uprintf("  Could not replace file: %s", WindowsErrorString());
@@ -723,7 +727,7 @@ static int udf_extract_files(udf_t *p_udf, udf_dirent_t *p_udf_dirent, const cha
 			if (!is_identical)
 				uprintf("  File name sanitized to '%s'", psz_sanpath);
 			file_handle = CreatePreallocatedFile(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
-				FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, file_length);
+				FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, file_length);
 			if (file_handle == INVALID_HANDLE_VALUE) {
 				err = GetLastError();
 				uprintf("  Unable to create file: %s", WindowsErrorString());
@@ -808,7 +812,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 	BOOL is_symlink, is_identical, create_file, free_p_statbuf = FALSE;
 	int length, r = 1;
 	char psz_fullpath[MAX_PATH], *psz_basename = NULL, *psz_sanpath = NULL;
-	char tmp[128], target_path[256], *last_slash;
+	char tmp[128], target_path[384], *last_slash;
 	const char *psz_iso_name = &psz_fullpath[strlen(psz_extract_dir)];
 	_Static_assert(ISO_BUFFER_SIZE % ISO_BLOCKSIZE == 0,
 		"ISO_BUFFER_SIZE is not a multiple of ISO_BLOCKSIZE");
@@ -876,7 +880,10 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			if (is_symlink)
 				img_report.has_symlinks = SYMLINKS_RR;
 		} else {
-			iso9660_name_translate_ext(p_statbuf->filename, psz_basename, joliet_level);
+			if_assert_fails(strlen(p_statbuf->filename) < sizeof(target_path))
+				continue;
+			iso9660_name_translate_ext(p_statbuf->filename, target_path, joliet_level);
+			safe_strcpy(psz_basename, sizeof(psz_fullpath) - length - 1, target_path);
 		}
 		if (p_statbuf->type == _STAT_DIR) {
 			if (!scan_only) {
@@ -918,8 +925,8 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			for (i = 0; i < NB_OLD_C32; i++) {
 				if (props.is_old_c32[i] && use_own_c32[i]) {
 					static_sprintf(tmp, "%s/syslinux-%s/%s", FILES_DIR, embedded_sl_version_str[0], old_c32_name[i]);
-					if (CopyFileU(tmp, psz_fullpath, FALSE)) {
-						uprintf("  Replaced with local version %s", IsFileInDB(tmp)?"✓":"✗");
+					if (copy_signed_file(tmp, psz_fullpath)) {
+						uprintf("  Replaced with local version %s", IsFileInDB(tmp) ? "✓" : "✗");
 						break;
 					}
 					uprintf("  Could not replace file: %s", WindowsErrorString());
@@ -937,8 +944,16 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 					static_sprintf(target_path, "%s/%s", psz_path, p_statbuf->rr.psz_symlink);
 					iso9660_stat_t* p_statbuf2 = iso9660_ifs_stat_translate(p_iso, target_path);
 					if (p_statbuf2 != NULL) {
+						create_file = FALSE;
 						to_windows_path(psz_fullpath);
 						to_windows_path(p_statbuf->rr.psz_symlink);
+						// Sanitization to prevent symlink creation outside the target drive. And I'm going
+						// to make the creator of any malicious ISO pay very dearly for it, with full blown
+						// end of operations and scary alert report so that they do get reported by the user.
+						if_assert_fails(p_statbuf->rr.psz_symlink[0] != '\\' &&
+							strchr(p_statbuf->rr.psz_symlink, '?') == NULL &&
+							strchr(p_statbuf->rr.psz_symlink, ':') == NULL)
+							goto out;
 						uprintf("Symlinking: %s%s ➔ %s", psz_fullpath,
 							(p_statbuf2->type == _STAT_DIR) ? "\\" : "", p_statbuf->rr.psz_symlink);
 						if (!CreateSymbolicLinkU(psz_fullpath, p_statbuf->rr.psz_symlink,
@@ -947,7 +962,6 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 						to_unix_path(p_statbuf->rr.psz_symlink);
 						to_unix_path(psz_fullpath);
 						iso9660_stat_free(p_statbuf2);
-						create_file = FALSE;
 					}
 				} else if (file_length == 0) {
 					if ((safe_stricmp(p_statbuf->filename, "syslinux") == 0) &&
@@ -983,7 +997,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 			}
 			if (create_file) {
 				file_handle = CreatePreallocatedFile(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
-					FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, file_length);
+					FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, file_length);
 				if (file_handle == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PATH_NOT_FOUND) {
 					// Some folks (umbrelos) managed to master their ISOs in a manner where some
 					// directories don't exist (or don't have _STAT_DIR) but still have files,
@@ -996,7 +1010,7 @@ static int iso_extract_files(iso9660_t* p_iso, const char *psz_path)
 						_mkdirExU(psz_sanpath);
 						*last_slash = '/';
 						file_handle = CreatePreallocatedFile(psz_sanpath, GENERIC_READ | GENERIC_WRITE,
-							FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, file_length);
+							FILE_SHARE_READ, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, file_length);
 					}
 				}
 				if (file_handle == INVALID_HANDLE_VALUE) {
@@ -1219,6 +1233,33 @@ void GetEfiBootInfo(char* buf, size_t buf_size, const char* source)
 	}
 }
 
+// We need to make sure we use the same extension mask for scanning and for extracting bootloaders
+// during scan, else the case sensitiveness of the mask may prevent us from accessing the relevant
+// bootloader (if say, we recorded '/efi/boot/bootx64.efi' during the scan without Joliet, but the
+// file is actually '/EFI/boot/bootx64.efi' when Joliet extensions are on). So we set a static global
+// extension mask, called from ExtractISO(), so that subsequent calls to ReadISOFileToBuffer() or
+// ExtractISOFile() can work with the same case-sensitive paths. And the reason we need to do this
+// whole dance with the extension mask is that we want to perform our first scan with Joliet disabled
+// (if Rock Ridge is enabled), so that we can find if there exists a Rock Ridge file with a name
+// greater than 64 chars in length or if there are symlinks. If that is the case, then we want to
+// disable Joliet during the extract phase, as it is incompatible with those RR extensions.
+static void set_iso_extension_mask(void) {
+	iso_extension_mask = ISO_EXTENSION_ALL;
+	if (!enable_rockridge)
+		// Disable Rock Ridge unconditionally if the feature was disabled by the user
+		iso_extension_mask &= ~ISO_EXTENSION_ROCK_RIDGE;
+	else if (scan_only)
+		// Disable Joliet for scanning *if* Rock Ridge is enabled
+		iso_extension_mask &= ~ISO_EXTENSION_JOLIET;
+	else if (img_report.has_long_filename || img_report.has_symlinks == SYMLINKS_RR)
+		// Disable Joliet for extracting *if* Rock Ridge is enabled and we have RR
+		// extensions conflicting with Joliet
+		iso_extension_mask &= ~ISO_EXTENSION_JOLIET;
+	if (!enable_joliet)
+		// Disable Joliet unconditionally if the feature was disabled by the user
+		iso_extension_mask &= ~ISO_EXTENSION_JOLIET;
+}
+
 BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 {
 	const char* basedir[] = { "i386", "amd64", "minint" };
@@ -1233,7 +1274,6 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	iso9660_pvd_t pvd;
 	udf_t* p_udf = NULL;
 	udf_dirent_t* p_udf_root;
-	iso_extension_mask_t iso_extension_mask = ISO_EXTENSION_ALL;
 
 	if ((!enable_iso) || (src_iso == NULL) || (dest_dir == NULL))
 		return FALSE;
@@ -1241,7 +1281,6 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	scan_only = scan;
 	if (!scan_only)
 		spacing = "";
-	cdio_log_set_handler((scan_only && !usb_debug) ? NULL : log_handler);
 	psz_extract_dir = dest_dir;
 	// Change progress style to marquee for scanning
 	if (scan_only) {
@@ -1257,6 +1296,12 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 		PrintInfo(0, MSG_202);
 	} else {
 		uprintf("Extracting files...");
+#ifdef VALIDATE_SAME_VOLUME
+		if (!GetVolumeNameForVolumeMountPointU(dest_dir, target_volume, sizeof(target_volume))) {
+			uprintf("Could not get target volume GUID");
+			return FALSE;
+		}
+#endif
 		IGNORE_RETVAL(_chdirU(app_data_dir));
 		if (total_blocks == 0) {
 			uprintf("Error: ISO has not been properly scanned.");
@@ -1304,17 +1349,7 @@ BOOL ExtractISO(const char* src_iso, const char* dest_dir, BOOL scan)
 	goto out;
 
 try_iso:
-	// Perform our first scan with Joliet disabled (if Rock Ridge is enabled), so that we can find if
-	// there exists a Rock Ridge file with a name > 64 chars or if there are symlinks. If that is the
-	// case then we also disable Joliet during the extract phase.
-	if ((!enable_joliet) || (enable_rockridge && (scan_only || img_report.has_long_filename ||
-		(img_report.has_symlinks == SYMLINKS_RR)))) {
-		iso_extension_mask &= ~ISO_EXTENSION_JOLIET;
-	}
-	if (!enable_rockridge) {
-		iso_extension_mask &= ~ISO_EXTENSION_ROCK_RIDGE;
-	}
-
+	set_iso_extension_mask();
 	p_iso = iso9660_open_ext(src_iso, iso_extension_mask);
 	if (p_iso == NULL) {
 		uprintf("%s'%s' doesn't look like an ISO image", spacing, src_iso);
@@ -1449,9 +1484,10 @@ out:
 		}
 		if (HAS_WININST(img_report)) {
 			char wim_path[4 * MAX_PATH];
-			assert(safe_strlen(image_path) + safe_strlen(&img_report.wininst_path[0][2]) + 2 < ARRAYSIZE(wim_path));
-			static_sprintf(wim_path, "%s|%s", image_path, &img_report.wininst_path[0][2]);
-			img_report.wininst_version = GetWimVersion(wim_path);
+			if_assert_succeeds(safe_strlen(image_path) + safe_strlen(&img_report.wininst_path[0][2]) + 2 < ARRAYSIZE(wim_path)) {
+				static_sprintf(wim_path, "%s|%s", image_path, &img_report.wininst_path[0][2]);
+				img_report.wininst_version = GetWimVersion(wim_path);
+			}
 		}
 		if (img_report.has_grub2) {
 			char grub_path[128];
@@ -1584,8 +1620,10 @@ out:
 				}
 			}
 		} else if (HAS_BOOTMGR(img_report) && enable_ntfs_compression) {
+			char cmdline[256];
 			// bootmgr might need to be uncompressed: https://github.com/pbatard/rufus/issues/1381
-			RunCommand("compact /u bootmgr* efi/boot/*.efi", dest_dir, TRUE);
+			static_sprintf(cmdline, "%s\\compact.exe /u bootmgr* efi/boot/*.efi", sysnative_dir);
+			RunCommand(cmdline, dest_dir, TRUE);
 		}
 		// Exception for Slax Syslinux UEFI bootloaders...
 		// ...that don't appear to work anyway as of slax-64bit-slackware-15.0.3.iso
@@ -1612,6 +1650,7 @@ out:
 	udf_close(p_udf);
 	if ((r != 0) && (ErrorStatus == 0))
 		ErrorStatus = RUFUS_ERROR(APPERR(scan_only ? ERROR_ISO_SCAN : ERROR_ISO_EXTRACT));
+	scan_only = FALSE;
 	return (r == 0);
 }
 
@@ -1672,7 +1711,7 @@ int64_t ExtractISOFile(const char* iso, const char* iso_file, const char* dest_f
 try_iso:
 	// Make sure to enable extensions, else we may not match the name of the file we are looking
 	// for since Rock Ridge may be needed to translate something like 'I386_PC' into 'i386-pc'...
-	p_iso = iso9660_open_ext(iso, ISO_EXTENSION_MASK);
+	p_iso = iso9660_open_ext(iso, iso_extension_mask);
 	if (p_iso == NULL) {
 		uprintf("Unable to open image '%s'", iso);
 		goto out;
@@ -1719,7 +1758,7 @@ out:
 uint32_t ReadISOFileToBuffer(const char* iso, const char* iso_file, uint8_t** buf)
 {
 	ssize_t read_size;
-	int64_t file_length;
+	uint64_t file_length;
 	uint32_t ret = 0, nblocks;
 	iso9660_t* p_iso = NULL;
 	udf_t* p_udf = NULL;
@@ -1727,7 +1766,6 @@ uint32_t ReadISOFileToBuffer(const char* iso, const char* iso_file, uint8_t** bu
 	iso9660_stat_t* p_statbuf = NULL;
 
 	*buf = NULL;
-	cdio_loglevel_default = CDIO_LOG_WARN;
 
 	// First try to open as UDF - fallback to ISO if it failed
 	p_udf = udf_open(iso);
@@ -1749,6 +1787,8 @@ uint32_t ReadISOFileToBuffer(const char* iso, const char* iso_file, uint8_t** bu
 		goto out;
 	}
 	nblocks = (uint32_t)((file_length + UDF_BLOCKSIZE - 1) / UDF_BLOCKSIZE);
+	if_assert_fails(nblocks < UINT32_MAX / UDF_BLOCKSIZE)
+		goto out;
 	*buf = malloc(nblocks * UDF_BLOCKSIZE + 1);
 	if (*buf == NULL) {
 		uprintf("Could not allocate buffer for file %s", iso_file);
@@ -1766,7 +1806,7 @@ uint32_t ReadISOFileToBuffer(const char* iso, const char* iso_file, uint8_t** bu
 try_iso:
 	// Make sure to enable extensions, else we may not match the name of the file we are looking
 	// for since Rock Ridge may be needed to translate something like 'I386_PC' into 'i386-pc'...
-	p_iso = iso9660_open_ext(iso, ISO_EXTENSION_MASK);
+	p_iso = iso9660_open_ext(iso, iso_extension_mask);
 	if (p_iso == NULL) {
 		uprintf("Unable to open image '%s'", iso);
 		goto out;
@@ -1801,7 +1841,6 @@ out:
 	udf_dirent_free(p_udf_file);
 	iso9660_close(p_iso);
 	udf_close(p_udf);
-	cdio_loglevel_default = usb_debug ? CDIO_LOG_INFO : CDIO_LOG_WARN;
 	if (ret == 0)
 		safe_free(*buf);
 	return ret;
@@ -2013,8 +2052,8 @@ BOOL DumpFatDir(void* iso, const char* path, int32_t cluster)
 				props.is_conf = ((len > 4) && (stricmp(&name[len - 5], ".conf") == 0));
 				uprintf("Extracting: %s (from '%s', %s)", target, img_report.efi_img_path,
 					SizeToHumanReadable(diritem.size, FALSE, FALSE));
-				handle = CreateFileU(target, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
-					NULL, CREATE_ALWAYS, diritem.attributes, NULL);
+				handle = CreatePreallocatedFile(target, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+					NULL, CREATE_NEW, diritem.attributes, diritem.size);
 				if (handle == INVALID_HANDLE_VALUE) {
 					uprintf("Could not create '%s': %s", target, WindowsErrorString());
 					continue;

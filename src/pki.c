@@ -413,11 +413,12 @@ int GetIssuerCertificateInfo(uint8_t* cert, cert_info_t* info)
 
 	if (info == NULL)
 		return -1;
-	if (pWinCert == NULL || pWinCert->dwLength == 0)
+	if (pWinCert == NULL || pWinCert->dwLength <= offsetof(WIN_CERTIFICATE, bCertificate))
 		return 0;
 
 	// Get message handle and store handle from the signed file.
-	signedDataBlob.cbData = pWinCert->dwLength;
+	// NB: dwLength includes the size of the WIN_CERTIFICATE header.
+	signedDataBlob.cbData = pWinCert->dwLength - offsetof(WIN_CERTIFICATE, bCertificate);
 	signedDataBlob.pbData = pWinCert->bCertificate;
 	if (!CryptQueryObject(CERT_QUERY_OBJECT_BLOB, &signedDataBlob,
 		CERT_QUERY_CONTENT_FLAG_PKCS7_SIGNED, CERT_QUERY_FORMAT_FLAG_BINARY,
@@ -891,6 +892,13 @@ BOOL ValidateOpensslSignature(BYTE* pbBuffer, DWORD dwBufferLen, BYTE* pbSignatu
 		// we don't keep potentially nasty stuff in memory.
 		memset(pbBuffer, 0, dwBufferLen);
 		uprintf("Signature validation failed: %s", WinPKIErrorString());
+	}
+
+	// Un-reverse the signature bytes, so we can save it for reuse
+	for (i = 0, j = dwSigLen - 1; i < j; i++, j--) {
+		t = pbSignature[i];
+		pbSignature[i] = pbSignature[j];
+		pbSignature[j] = t;
 	}
 
 out:

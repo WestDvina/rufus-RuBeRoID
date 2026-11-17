@@ -75,12 +75,13 @@ void uprintf(const char *format, ...)
 	int n;
 
 	va_start(args, format);
-	n = safe_vsnprintf(p, sizeof(buf)-3, format, args); // buf-3 is room for CR/LF/NUL
+	n = safe_vsnprintf(p, sizeof(buf) - 3, format, args); // buf - 3 is room for CR/LF/NUL
 	va_end(args);
 
-	p += (n < 0)?sizeof(buf)-3:n;
+	// safe_vsnprintf() translates to _vsnprintf_s() for all toolchains and returns negative on truncation
+	p += (n < 0) ? sizeof(buf) - 3 : n;
 
-	while((p>buf) && (isspaceU(p[-1])))
+	while((p > buf) && (isspaceU(p[-1])))
 		*--p = '\0';
 
 	*p++ = '\r';
@@ -158,9 +159,13 @@ void uprint_progress(uint64_t cur_value, uint64_t max_value)
 
 uint32_t read_file(const char* path, uint8_t** buf)
 {
+	if_assert_fails(safe_strlen(path) > 0 && buf != NULL)
+		return 0;
+
+	*buf = NULL;
 	FILE* fd = fopenU(path, "rb");
 	if (fd == NULL) {
-		uprintf("Error: Can't open file '%s'", path);
+		uprintf("Can't open file '%s'", path);
 		return 0;
 	}
 
@@ -171,12 +176,12 @@ uint32_t read_file(const char* path, uint8_t** buf)
 	// +1 so we can add an extra NUL
 	*buf = malloc(size + 1);
 	if (*buf == NULL) {
-		uprintf("Error: Can't allocate %d bytes buffer for file '%s'", size, path);
+		uprintf("Can't allocate %d bytes buffer for file '%s'", size, path);
 		size = 0;
 		goto out;
 	}
 	if (fread(*buf, 1, size, fd) != size) {
-		uprintf("Error: Can't read '%s'", path);
+		uprintf("Can't read '%s'", path);
 		size = 0;
 	}
 	// Always NUL terminate the file
@@ -191,19 +196,86 @@ out:
 	return size;
 }
 
+/*
+ * Read and validate a local signed file against its signature.
+ * buf can be NULL in which case only validation is performed (returns nonzero size if valid)
+ * 
+ */
+uint32_t read_signed_file(const char* path, uint8_t** buf)
+{
+	char* sig_path = NULL;
+	uint8_t *sig = NULL, *_buf = NULL;
+	uint32_t size = 0;
+	size_t len;
+
+	if_assert_fails(safe_strlen(path) > 0)
+		return 0;
+
+	// If the file doesn't exist, just return
+	if (_accessU(path, 0) == -1)
+		return 0;
+	len = strlen(path) + 5;
+	sig_path = malloc(len);
+	if (sig_path == NULL) {
+		uprintf("Can't allocate '%s.sig' name", path);
+		return 0;
+	}
+	safe_sprintf(sig_path, len, "%s.sig", path);
+	size = read_file(sig_path, &sig);
+	safe_free(sig_path);
+	if (size != RSA_SIGNATURE_SIZE) {
+		safe_free(sig);
+		uprintf("Signature for local '%s' is missing or corrupted", path);
+		return 0;
+	}
+
+	size = read_file(path, buf ? buf : &_buf);
+	if (!ValidateOpensslSignature(buf ? *buf : _buf, size, sig, RSA_SIGNATURE_SIZE)) {
+		safe_free(sig);
+		if (buf)
+			safe_free(*buf);
+		else
+			free(_buf);
+		uprintf("Signature for local '%s' is invalid ✗", path);
+		return 0;
+	}
+
+	safe_free(_buf);
+	safe_free(sig);
+	uprintf("Signature for local '%s' is valid ✓", path);
+	return size;
+}
+
 uint32_t write_file(const char* path, const uint8_t* buf, const uint32_t size)
 {
 	uint32_t written;
+
+	if_assert_fails(safe_strlen(path) > 0 && buf != NULL)
+		return 0;
+
 	FILE* fd = fopenU(path, "wb");
 	if (fd == NULL) {
-		uprintf("Error: Can't create '%s'", path);
+		uprintf("Can't create '%s'", path);
 		return 0;
 	}
 	written = (uint32_t)fwrite(buf, 1, size, fd);
 	if (written != size)
-		uprintf("Error: Can't write '%s'", path);
+		uprintf("Can't write '%s'", path);
 	fclose(fd);
 	return written;
+}
+
+BOOL copy_signed_file(const char* src, const char* dst)
+{
+	BOOL ret = FALSE;
+	uint8_t* buf = NULL;
+	uint32_t len;
+	len = read_signed_file(src, &buf);
+	if (len == 0)
+		return FALSE;
+	ret = (write_file(dst, buf, len) == len);
+	free(buf);
+	return ret;
 }
 
 // Prints a bitstring of a number of any size, with or without leading zeroes.
@@ -693,132 +765,57 @@ DWORD WaitForSingleObjectWithMessages(HANDLE hHandle, DWORD dwMilliseconds)
 	return res;
 }
 
-#define STATUS_SUCCESS					((NTSTATUS)0x00000000L)
-#define STATUS_PROCEDURE_NOT_FOUND		((NTSTATUS)0xC000007AL)
-#define FILE_ATTRIBUTE_VALID_FLAGS		0x00007FB7
-#define NtCurrentPeb()					(NtCurrentTeb()->ProcessEnvironmentBlock)
-#define RtlGetProcessHeap()				(NtCurrentPeb()->Reserved4[1]) // NtCurrentPeb()->ProcessHeap, mangled due to deficiencies in winternl.h
+#ifdef VALIDATE_SAME_VOLUME
+extern char target_volume[64];
+// Validates that a file handle resides on the same volume as our target volume
+static BOOL ValidateVolumeGUID(HANDLE h)
+{
+	char path[MAX_PATH + 64];
+	DWORD size = GetFinalPathNameByHandleA(h, path, sizeof(path), FILE_NAME_NORMALIZED | VOLUME_NAME_GUID);
+	if (size < 49 || size >= sizeof(path))
+		return FALSE;
 
-PF_TYPE_DECL(NTAPI, BOOLEAN, RtlDosPathNameToNtPathNameW, (PCWSTR, PUNICODE_STRING, PWSTR*, PVOID));
-PF_TYPE_DECL(NTAPI, VOID, RtlSetLastWin32ErrorAndNtStatusFromNtStatus, (NTSTATUS));
+	return (_strnicmp(path, target_volume, 49) == 0);
+}
+#endif
 
+// This creates a *contiguous* preallocated file on file systems such as NTFS.
+// The contiguousness is something we want due to the *OBNOXIOUS* AMI NTFS driver
+// but that makes their UEFI NTFS driver read data from the wrong clusters when
+// an NTFS file that has multiple Runs (contiguous cluster sections) happens to
+// be issued a read that matches the size of a Run exactly. Because of this, our
+// UEFI media validation reports files that are corrupted (because the Ami driver
+// fed us garbage data) whereas the data on the NTFS file system is absolutely
+// fine. Therefore, to work around this bug and make sure our NTFS files have
+// only one Run (i.e. have contiguous data), we add a call to SetEndOfFile().
+// See https://github.com/pbatard/AmiNtfsBug for more details.
+// This *should* also pre-allocate the file on disk...
 HANDLE CreatePreallocatedFile(const char* lpFileName, DWORD dwDesiredAccess,
 	DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
-	DWORD dwFlagsAndAttributes, LONGLONG fileSize)
+	DWORD dwFlagsAndAttributes, LONGLONG llFileSize)
 {
-	HANDLE fileHandle = INVALID_HANDLE_VALUE;
-	OBJECT_ATTRIBUTES objectAttributes;
-	IO_STATUS_BLOCK ioStatusBlock;
-	UNICODE_STRING ntPath;
-	ULONG fileAttributes, flags = 0;
-	LARGE_INTEGER allocationSize;
-	NTSTATUS status = STATUS_SUCCESS;
+	HANDLE h = CreateFileU(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+		dwCreationDisposition, dwFlagsAndAttributes, NULL);
+	if (h == INVALID_HANDLE_VALUE)
+		return h;
 
-	PF_INIT_OR_SET_STATUS(RtlDosPathNameToNtPathNameW, Ntdll);
-	PF_INIT_OR_SET_STATUS(RtlSetLastWin32ErrorAndNtStatusFromNtStatus, Ntdll);
-
-	if (!NT_SUCCESS(status)) {
-		return CreateFileU(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
-			dwCreationDisposition, dwFlagsAndAttributes, NULL);
-	}
-
-	wconvert(lpFileName);
-
-	// Determine creation disposition and flags
-	switch (dwCreationDisposition) {
-	case CREATE_NEW:
-		dwCreationDisposition = FILE_CREATE;
-		break;
-	case CREATE_ALWAYS:
-		dwCreationDisposition = FILE_OVERWRITE_IF;
-		break;
-	case OPEN_EXISTING:
-		dwCreationDisposition = FILE_OPEN;
-		break;
-	case OPEN_ALWAYS:
-		dwCreationDisposition = FILE_OPEN_IF;
-		break;
-	case TRUNCATE_EXISTING:
-		dwCreationDisposition = FILE_OVERWRITE;
-		break;
-	default:
-		SetLastError(ERROR_INVALID_PARAMETER);
+#ifdef VALIDATE_SAME_VOLUME
+	// Double check that the files we create are on our expected target volume
+	if_assert_fails(ValidateVolumeGUID(h)) {
+		CloseHandle(h);
 		return INVALID_HANDLE_VALUE;
 	}
+#endif
 
-	if ((dwFlagsAndAttributes & FILE_FLAG_OVERLAPPED) == 0)
-		flags |= FILE_SYNCHRONOUS_IO_NONALERT;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_WRITE_THROUGH) != 0)
-		flags |= FILE_WRITE_THROUGH;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_NO_BUFFERING) != 0)
-		flags |= FILE_NO_INTERMEDIATE_BUFFERING;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_RANDOM_ACCESS) != 0)
-		flags |= FILE_RANDOM_ACCESS;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_SEQUENTIAL_SCAN) != 0)
-		flags |= FILE_SEQUENTIAL_ONLY;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_DELETE_ON_CLOSE) != 0) {
-		flags |= FILE_DELETE_ON_CLOSE;
-		dwDesiredAccess |= DELETE;
-	}
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_BACKUP_SEMANTICS) != 0) {
-		if ((dwDesiredAccess & GENERIC_ALL) != 0)
-			flags |= (FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REMOTE_INSTANCE);
-		else {
-			if ((dwDesiredAccess & GENERIC_READ) != 0)
-				flags |= FILE_OPEN_FOR_BACKUP_INTENT;
-
-			if ((dwDesiredAccess & GENERIC_WRITE) != 0)
-				flags |= FILE_OPEN_REMOTE_INSTANCE;
-		}
-	} else {
-		flags |= FILE_NON_DIRECTORY_FILE;
-	}
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_OPEN_REPARSE_POINT) != 0)
-		flags |= FILE_OPEN_REPARSE_POINT;
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_OPEN_NO_RECALL) != 0)
-		flags |= FILE_OPEN_NO_RECALL;
-
-	fileAttributes = dwFlagsAndAttributes & (FILE_ATTRIBUTE_VALID_FLAGS & ~FILE_ATTRIBUTE_DIRECTORY);
-
-	dwDesiredAccess |= (SYNCHRONIZE | FILE_READ_ATTRIBUTES);
-
-	// Convert DOS path to NT format
-	if (!pfRtlDosPathNameToNtPathNameW(wlpFileName, &ntPath, NULL, NULL)) {
-		wfree(lpFileName);
-		SetLastError(ERROR_FILE_NOT_FOUND);
+	// No big deal if either of the following 2 calls fail...
+	if (SetFilePointerEx(h, (LARGE_INTEGER) { .QuadPart = llFileSize }, NULL, FILE_BEGIN))
+		SetEndOfFile(h);
+	// ...however, if we can't reset the file pointer to the beginning, we have a problem
+	if (!SetFilePointerEx(h, (LARGE_INTEGER) { .QuadPart = 0ULL }, NULL, FILE_BEGIN)) {
+		CloseHandle(h);
 		return INVALID_HANDLE_VALUE;
 	}
-
-	InitializeObjectAttributes(&objectAttributes, &ntPath, 0, NULL, NULL);
-
-	if (lpSecurityAttributes != NULL) {
-		if (lpSecurityAttributes->bInheritHandle)
-			objectAttributes.Attributes |= OBJ_INHERIT;
-		objectAttributes.SecurityDescriptor = lpSecurityAttributes->lpSecurityDescriptor;
-	}
-
-	if ((dwFlagsAndAttributes & FILE_FLAG_POSIX_SEMANTICS) == 0)
-		objectAttributes.Attributes |= OBJ_CASE_INSENSITIVE;
-
-	allocationSize.QuadPart = fileSize;
-
-	// Call NtCreateFile
-	status = NtCreateFile(&fileHandle, dwDesiredAccess, &objectAttributes, &ioStatusBlock,
-		&allocationSize, fileAttributes, dwShareMode, dwCreationDisposition, flags, NULL, 0);
-
-	RtlFreeHeap(RtlGetProcessHeap(), 0, ntPath.Buffer);
-	wfree(lpFileName);
-	pfRtlSetLastWin32ErrorAndNtStatusFromNtStatus(status);
-
-	return fileHandle;
+	return h;
 }
 
 // The following calls are used to resolve the addresses of DLL function calls
@@ -912,7 +909,7 @@ uint32_t ResolveDllAddress(dll_resolver_t* resolver)
 	if (Notification(MB_YESNO | MB_ICONWARNING, lmprintf(MSG_115), lmprintf(MSG_345)) != IDYES)
 		goto out;
 	static_sprintf(path, "%s\\%s", temp_dir, info->PdbName);
-	static_sprintf(url, "http://msdl.microsoft.com/download/symbols/%s/%s%x/%s",
+	static_sprintf(url, "https://msdl.microsoft.com/download/symbols/%s/%s%x/%s",
 		info->PdbName, GuidToString(&info->Guid, FALSE), (int)info->Age, info->PdbName);
 	if (DownloadToFileOrBufferEx(url, path, SYMBOL_SERVER_USER_AGENT, NULL, hMainDialog, FALSE) < 200 * KB)
 		goto out;

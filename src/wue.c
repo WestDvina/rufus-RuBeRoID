@@ -116,7 +116,7 @@ char* CreateUnattendXml(int arch, int flags)
 	static char path[MAX_PATH], tmp[MAX_PATH];
 	char* tzstr;
 	FILE* fd;
-	TIME_ZONE_INFORMATION tz_info;
+	DYNAMIC_TIME_ZONE_INFORMATION dtz_info;
 	int i, order;
 	unattend_xml_flags = flags;
 	StrArray commands = { 0 };
@@ -150,7 +150,7 @@ char* CreateUnattendXml(int arch, int flags)
 		fprintf(fd, "        </ProductKey>\n");
 		fprintf(fd, "      </UserData>\n");
 		if (flags & UNATTEND_SILENT_INSTALL) {
-			uprintf("• Silent Install");
+			uprintf("• ⚠Silent Install⚠");
 			// Automatically partition the disk and set the installation target
 			fprintf(fd, "      <DiskConfiguration>\n");
 			fprintf(fd, "        <WillShowUI>OnError</WillShowUI>\n");
@@ -333,8 +333,9 @@ char* CreateUnattendXml(int arch, int flags)
 				fprintf(fd, "      </OOBE>\n");
 			}
 			if (flags & UNATTEND_DUPLICATE_LOCALE) {
-				if ((GetTimeZoneInformation(&tz_info) == TIME_ZONE_ID_INVALID) ||
-					((tzstr = wchar_to_utf8(tz_info.StandardName)) == NULL)) {
+				if ((GetDynamicTimeZoneInformation(&dtz_info) == TIME_ZONE_ID_INVALID) ||
+					// Can't use StandardName, which is localized. Use TimeZoneKeyName instead.
+					((tzstr = wchar_to_utf8(dtz_info.TimeZoneKeyName)) == NULL)) {
 					uprintf("WARNING: Could not retrieve current timezone: %s", WindowsErrorString());
 				} else {
 					fprintf(fd, "      <TimeZone>%s</TimeZone>\n", tzstr);
@@ -342,6 +343,8 @@ char* CreateUnattendXml(int arch, int flags)
 				}
 			}
 			if (flags & UNATTEND_SET_USER) {
+				// Remove leading and trailing whitespaces (https://github.com/pbatard/rufus/issues/2950)
+				trim(unattend_username);
 				for (i = 0; (i < ARRAYSIZE(unallowed_account_names)) && (stricmp(unattend_username, unallowed_account_names[i]) != 0); i++);
 				if (i < ARRAYSIZE(unallowed_account_names)) {
 					uprintf("WARNING: '%s' is not allowed as local account name - Option ignored", unattend_username);
@@ -350,7 +353,7 @@ char* CreateUnattendXml(int arch, int flags)
 					filter_chars(unattend_username, USERNAME_INVALID_CHARS, '_');
 					uprintf("• Use '%s' for local account name", unattend_username);
 					if (strcmp(org_username, unattend_username) != 0)
-						uprintf("WARNING: Local account name contained unallowed characters and has been sanitized");
+						uprintf("WARNING: Local account name '%s' contained unallowed characters and has been sanitized", org_username);
 					free(org_username);
 					// If we create a local account in unattend.xml, then we can get Windows 11
 					// 22H2 to skip MSA even if the network is connected during installation.
@@ -417,6 +420,9 @@ char* CreateUnattendXml(int arch, int flags)
 					"/v SystemPaneSuggestionsEnabled /t REG_DWORD /d 0 /f", TRUE);
 				StrArrayAdd(&commands, "reg add \"HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Search\" "
 					"/v BingSearchEnabled /t REG_DWORD /d 0 /f", TRUE);
+				// Disable auto installation of manufacturer's crappy apps when plugging new hardware
+				StrArrayAdd(&commands, "reg add \"HKLM\\Software\\Policies\\Microsoft\\Windows\\Device Metadata\" "
+					"/v PreventDeviceMetadataFromNetwork /t REG_DWORD /d 1 /f", TRUE);
 				// Disable News
 				StrArrayAdd(&commands, "reg add \"HKLM\\Software\\Policies\\Microsoft\\Dsh\" "
 					"/v AllowNewsAndInterests /t REG_DWORD /d 0 /f", TRUE);
@@ -444,6 +450,10 @@ char* CreateUnattendXml(int arch, int flags)
 					"\"Set-ItemProperty -Path 'Registry::HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Start' "
 					"-Name 'VisiblePlaces' -Value $([convert]::FromBase64String('ztU0LVr6Q0WC8iLm6vd3PC+zZ+PeiVVDv85h83sYqTe8JIo"
 					"UDNaJQqCAbtm7okiCRIF1/g0IrkKL2jTtl7ZjlEqwvXRK+WhPi9ZDmAcdqLyGCHNSqlFDQp97J3ZYRlnU')) -Type 'Binary'\"", TRUE);
+				// Restore the classic right click context menu
+				uprintf("• QoL: Restore classic context menu");
+				StrArrayAdd(&commands, "reg add \"HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32\" "
+					"/ve /t REG_SZ /d \"\" /f", TRUE);
 			}
 			// Now that we have all the commands to run, create the FirstLogonCommands section.
 			for (order = 1; order <= (int)commands.Index; order++) {
@@ -596,7 +606,12 @@ BOOL SetupWinPE(char drive_letter)
 		uprintf("Could not get size for file %s: %s\n", dst, WindowsErrorString());
 		goto out;
 	}
-	buffer = (char*)malloc(size);
+	if (size < 64) {
+		uprintf("File %s is too small to patch\n", dst);
+		goto out;
+	}
+	// +1 so that the '%s' in the log messages below can't read past the end of the buffer
+	buffer = (char*)calloc(1, size + 1);
 	if (buffer == NULL)
 		goto out;
 	if ((!ReadFile(handle, buffer, size, &read_size, NULL)) || (size != read_size)) {
@@ -1061,7 +1076,8 @@ BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 		HAS_BOOTMGR_BIOS(img_report) ? (HAS_BOOTMGR_EFI(img_report) ? "ALL" : "BIOS") : "UEFI",
 		(use_esp) ? ms_efi : drive_name);
 	// I don't believe we can ever have a stray '%' in cmd, but just in case...
-	assert(strchr(cmd, '%') == NULL);
+	if_assert_fails(strchr(cmd, '%') == NULL)
+		return FALSE;
 	uprintf(cmd);
 	if (RunCommand(cmd, sysnative_dir, usb_debug) != 0) {
 		// Try to continue... but report a failure
@@ -1079,9 +1095,9 @@ BOOL SetupWinToGo(DWORD DriveIndex, const char* drive_name, BOOL use_esp)
 	if (unattend_xml_flags & UNATTEND_OFFLINE_INTERNAL_DRIVES) {
 		uprintf("Setting the target's internal drives offline using command:");
 		// This applies the "offlineServicing" section of the unattend.xml (while ignoring the other sections)
-		static_sprintf(cmd, "dism /Image:%s\\ /Apply-Unattend:%s", drive_name, unattend_xml_path);
+		static_sprintf(cmd, "%s\\dism.exe /Image:%s\\ /Apply-Unattend:\"%s\"", sysnative_dir, drive_name, unattend_xml_path);
 		uprintf(cmd);
-		RunCommand(cmd, NULL, usb_debug);
+		RunCommand(cmd, sysnative_dir, usb_debug);
 	}
 
 	uprintf("Disabling use of the Windows Recovery Environment using command:");
@@ -1178,7 +1194,7 @@ BOOL ApplyWindowsCustomization(char drive_letter, int flags)
 				md5sum_path[0] = drive_letter;
 				dwSize = read_file(setup_exe, &buf);
 				if (dwSize != 0) {
-					setup_arch = GetPeArch(buf);
+					setup_arch = GetPeArch(buf, dwSize);
 					safe_free(buf);
 					if (setup_arch != IMAGE_FILE_MACHINE_AMD64 && setup_arch != IMAGE_FILE_MACHINE_ARM64) {
 						uprintf("WARNING: Unsupported arch 0x%x -- in-place upgrade wrapper will not be added", setup_arch);
@@ -1363,17 +1379,25 @@ BOOL ApplyWindowsCustomization(char drive_letter, int flags)
 			len = (uint32_t)strlen(tmp_path[1]);
 			tmp_dir_end = &tmp_path[1][len];
 
-			// Copy/override the Font files
-			static_strcat(tmp_path[1], "\\Fonts_EX");
+			// Copy/override the Font files (and make sure the "fonts" part is lowercase, like the dest)
+			static_strcat(tmp_path[1], "\\fonts_EX");
 			StrArrayCreate(&files, 64);
 			ListDirectoryContent(&files, tmp_path[1], LIST_DIR_TYPE_FILE);
 			for (i = 0; i < (int)files.Index; i++) {
 				static_sprintf(path, "%c:\\efi\\microsoft\\boot%s", drive_letter, &files.String[i][len]);
 				rep = remove_substr(path, "_EX");
-				if (!CopyFileU(files.String[i], rep, FALSE))
+				if (validate_md5sum)
+					md5sum_totalbytes -= _filesizeU(rep);
+				// TODO: Could we get fragmented data from CopyFile() that may trigger the AMI bug?
+				if (!CopyFileU(files.String[i], rep, FALSE)) {
 					uprintf("WARNING: Could not copy '%s': %s", path, WindowsErrorString());
-				else
+				} else {
 					num_replaced++;
+					if (validate_md5sum) {
+						md5sum_totalbytes += _filesizeU(files.String[i]);
+						StrArrayAdd(&modified_files, rep, TRUE);
+					}
+				}
 				safe_free(rep);
 			}
 			StrArrayDestroy(&files);
@@ -1385,10 +1409,17 @@ BOOL ApplyWindowsCustomization(char drive_letter, int flags)
 				static_sprintf(path, "%c:\\efi\\boot\\boot%s.efi", drive_letter, efi_archname[i]);
 				if (!PathFileExistsA(path))
 					continue;
-				if (!CopyFileU(tmp_path[1], path, FALSE))
+				if (validate_md5sum)
+					md5sum_totalbytes -= _filesizeU(path);
+				if (!CopyFileU(tmp_path[1], path, FALSE)) {
 					uprintf("WARNING: Could not replace 'boot%s.efi': %s", efi_archname[i], WindowsErrorString());
-				else
+				} else {
 					num_replaced++;
+					if (validate_md5sum) {
+						md5sum_totalbytes += _filesizeU(tmp_path[1]);
+						StrArrayAdd(&modified_files, path, TRUE);
+					}
+				}
 				break;
 			}
 
@@ -1396,10 +1427,19 @@ BOOL ApplyWindowsCustomization(char drive_letter, int flags)
 			*tmp_dir_end = '\0';
 			static_strcat(tmp_path[1], "\\EFI_EX\\bootmgr_EX.efi");
 			static_sprintf(path, "%c:\\bootmgr.efi", drive_letter);
-			if (!CopyFileU(tmp_path[1], path, FALSE))
-				uprintf("WARNING: Could not replace 'bootmgr.efi': %s", WindowsErrorString());
-			else
-				num_replaced++;
+			if (PathFileExistsA(tmp_path[1])) {	// 26H2 doesn't have a bootmgr.efi in EFI_EX
+				if (validate_md5sum)
+					md5sum_totalbytes -= _filesizeU(path);
+				if (!CopyFileU(tmp_path[1], path, FALSE)) {
+					uprintf("WARNING: Could not replace 'bootmgr.efi': %s", WindowsErrorString());
+				} else {
+					num_replaced++;
+					if (validate_md5sum) {
+						md5sum_totalbytes += _filesizeU(path);
+						StrArrayAdd(&modified_files, path, TRUE);
+					}
+				}
+			}
 			if (num_replaced != 0) {
 				uprintf("Replaced %d EFI bootloader files with 'Windows UEFI CA 2023' compatible versions.", num_replaced);
 				uprintf("Note that to boot this media, you must have a system where the 'Windows UEFI CA 2023'");
@@ -1425,7 +1465,13 @@ out:
 	if (update_boot_wim) {
 		uprintf("Updating '%s[%d]'...", boot_wim_path, wim_index);
 		if (wimlib_update_image(wim, wim_index, wuc, wuc_index, 0) != 0 ||
-			wimlib_overwrite(wim, WIMLIB_WRITE_FLAG_RECOMPRESS, 0) != 0) {
+			// We use WIMLIB_WRITE_FLAG_UNSAFE_COMPACT unconditionally because, due to the
+			// AMI NTFS driver bug that may produce false positives for MD5, we want to
+			// have an unfragmented boot.wim after it is updated (one VCN), just as the
+			// original boot.wim was written to disk, and our changes are such that wimlib
+			// should be able to carry them all out within the existing file cluster area,
+			// without needing to allocate new cluster ranges (and thus break our file).
+			wimlib_overwrite(wim, WIMLIB_WRITE_FLAG_UNSAFE_COMPACT, 0) != 0) {
 			uprintf("Error: Failed to update %s", boot_wim_path);
 			r = FALSE;
 		}

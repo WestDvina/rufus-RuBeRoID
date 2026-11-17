@@ -951,144 +951,49 @@ BOOL IsFontAvailable(const char* font_name)
 }
 
 /*
- * Set or restore a Local Group Policy DWORD key indexed by szPath/SzPolicy
+ * Set or restore the NoDriveTypeAutorun registry key
  */
-// I've seen rare cases where pLGPO->lpVtbl->Save(...) gets stuck, which prevents the
-// application from launching altogether. To alleviate this, use a thread that we can
-// terminate if needed...
-typedef struct {
-	BOOL bRestore;
-	BOOL* bExistingKey;
-	const char* szPath;
-	const char* szPolicy;
-	DWORD dwValue;
-} SetLGP_Params;
-
-DWORD WINAPI SetLGPThread(LPVOID param)
+BOOL SetNDTA(BOOL bRestore, BOOL* bExistingKey, DWORD dwValue)
 {
-	SetLGP_Params* p = (SetLGP_Params*)param;
+	static DWORD original_val = 0;
 	LONG r;
-	DWORD disp, regtype, val=0, val_size=sizeof(DWORD);
-	HRESULT hr;
-	IGroupPolicyObject* pLGPO;
-	// Along with global 'existing_key', this static value is used to restore initial state
-	static DWORD original_val;
-	HKEY path_key = NULL, policy_key = NULL;
-	// MSVC is finicky about these ones even if you link against gpedit.lib => redefine them
-	const IID my_IID_IGroupPolicyObject =
-		{ 0xea502723L, 0xa23d, 0x11d1, { 0xa7, 0xd3, 0x0, 0x0, 0xf8, 0x75, 0x71, 0xe3 } };
-	const IID my_CLSID_GroupPolicyObject =
-		{ 0xea502722L, 0xa23d, 0x11d1, { 0xa7, 0xd3, 0x0, 0x0, 0xf8, 0x75, 0x71, 0xe3 } };
-	GUID ext_guid = REGISTRY_EXTENSION_GUID;
-	// Can be anything really
-	GUID snap_guid = { 0x3D271CFCL, 0x2BC6, 0x4AC2, {0xB6, 0x33, 0x3B, 0xDF, 0xF5, 0xBD, 0xAB, 0x2A} };
+	DWORD disp, regtype, val = 0, val_size = sizeof(DWORD);
+	HKEY key = NULL;
 
-	// Reinitialize COM since it's not shared between threads
-	IGNORE_RETVAL(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE));
-
-	// We need an IGroupPolicyObject instance to set a Local Group Policy
-	hr = CoCreateInstance(&my_CLSID_GroupPolicyObject, NULL, CLSCTX_INPROC_SERVER, &my_IID_IGroupPolicyObject, (LPVOID*)&pLGPO);
-	if (FAILED(hr)) {
-		ubprintf("SetLGP: CoCreateInstance failed; hr = %lx", hr);
-		goto error;
-	}
-
-	hr = pLGPO->lpVtbl->OpenLocalMachineGPO(pLGPO, GPO_OPEN_LOAD_REGISTRY);
-	if (FAILED(hr)) {
-		ubprintf("SetLGP: OpenLocalMachineGPO failed - error %lx", hr);
-		goto error;
-	}
-
-	hr = pLGPO->lpVtbl->GetRegistryKey(pLGPO, GPO_SECTION_MACHINE, &path_key);
-	if (FAILED(hr)) {
-		ubprintf("SetLGP: GetRegistryKey failed - error %lx", hr);
-		goto error;
-	}
-
-	r = RegCreateKeyExA(path_key, p->szPath, 0, NULL, 0, KEY_SET_VALUE | KEY_QUERY_VALUE,
-		NULL, &policy_key, &disp);
+	r = RegCreateKeyExA(HKEY_LOCAL_MACHINE, "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",	0, NULL, 0,
+		KEY_SET_VALUE | KEY_QUERY_VALUE | KEY_CREATE_SUB_KEY, NULL, &key, &disp);
 	if (r != ERROR_SUCCESS) {
-		ubprintf("SetLGP: Failed to open LGPO path %s - error %lx", p->szPath, hr);
-		policy_key = NULL;
-		goto error;
+		ubprintf("SetNDTA: Failed to locate path - error %lx", r);
+		return FALSE;
 	}
 
-	if ((disp == REG_OPENED_EXISTING_KEY) && (!p->bRestore) && (!(*(p->bExistingKey)))) {
+	if (disp == REG_OPENED_EXISTING_KEY && !bRestore && !*bExistingKey) {
 		// backup existing value for restore
-		*(p->bExistingKey) = TRUE;
+		*bExistingKey = TRUE;
 		regtype = REG_DWORD;
-		r = RegQueryValueExA(policy_key, p->szPolicy, NULL, &regtype, (LPBYTE)&original_val, &val_size);
+		r = RegQueryValueExA(key, "NoDriveTypeAutorun", NULL, &regtype, (LPBYTE)&original_val, &val_size);
 		if (r == ERROR_FILE_NOT_FOUND) {
 			// The Key exists but not its value, which is OK
-			*(p->bExistingKey) = FALSE;
+			*bExistingKey = FALSE;
 		} else if (r != ERROR_SUCCESS) {
-			ubprintf("SetLGP: Failed to read original %s policy value - error %lx", p->szPolicy, r);
+			ubprintf("SetNDTA: Failed to read original policy value - error %lx", r);
 		}
 	}
 
-	if ((!p->bRestore) || (*(p->bExistingKey))) {
-		val = (p->bRestore)?original_val:p->dwValue;
-		r = RegSetValueExA(policy_key, p->szPolicy, 0, REG_DWORD, (BYTE*)&val, sizeof(val));
+	if (!bRestore || *bExistingKey) {
+		val = bRestore ? original_val : dwValue;
+		r = RegSetValueExA(key, "NoDriveTypeAutorun", 0, REG_DWORD, (BYTE*)&val, sizeof(val));
 	} else {
-		r = RegDeleteValueA(policy_key, p->szPolicy);
+		r = RegDeleteValueA(key, "NoDriveTypeAutorun");
 	}
-	if (r != ERROR_SUCCESS) {
-		ubprintf("SetLGP: RegSetValueEx / RegDeleteValue failed - error %lx", r);
-	}
-	RegCloseKey(policy_key);
-	policy_key = NULL;
-
-	// Apply policy
-	hr = pLGPO->lpVtbl->Save(pLGPO, TRUE, (p->bRestore)?FALSE:TRUE, &ext_guid, &snap_guid);
-	if (hr != S_OK) {
-		ubprintf("SetLGP: Unable to apply %s policy - error %lx", p->szPolicy, hr);
-		goto error;
-	} else {
-		if ((!p->bRestore) || (*(p->bExistingKey))) {
-			ubprintf("SetLGP: Successfully %s %s policy to 0x%08lX", (p->bRestore)?"restored":"set", p->szPolicy, val);
-		} else {
-			ubprintf("SetLGP: Successfully removed %s policy key", p->szPolicy);
-		}
-	}
-
-	RegCloseKey(path_key);
-	pLGPO->lpVtbl->Release(pLGPO);
+	RegCloseKey(key);
+	if (r != ERROR_SUCCESS)
+		ubprintf("SetNDTA: RegSetValueEx/RegDeleteValue failed - error %lx", r);
+	else if (!bRestore || *bExistingKey)
+		ubprintf("SetNDTA: Successfully %s NoDriveTypeAutorun to 0x%08lX", bRestore ? "restored" : "set", val);
+	else
+		ubprintf("SetNDTA: Successfully removed NoDriveTypeAutorun key");
 	return TRUE;
-
-error:
-	if (path_key != NULL)
-		RegCloseKey(path_key);
-	if (pLGPO != NULL)
-		pLGPO->lpVtbl->Release(pLGPO);
-	CoUninitialize();
-	return FALSE;
-}
-
-BOOL SetLGP(BOOL bRestore, BOOL* bExistingKey, const char* szPath, const char* szPolicy, DWORD dwValue)
-{
-	SetLGP_Params params = {bRestore, bExistingKey, szPath, szPolicy, dwValue};
-	DWORD r = FALSE;
-	HANDLE thread_id;
-
-	if (ReadSettingBool(SETTING_DISABLE_LGP)) {
-		ubprintf("LPG handling disabled, per settings");
-		return FALSE;
-	}
-
-	thread_id = CreateThread(NULL, 0, SetLGPThread, (LPVOID)&params, 0, NULL);
-	if (thread_id == NULL) {
-		ubprintf("SetLGP: Unable to start thread");
-		return FALSE;
-	}
-	if (WaitForSingleObject(thread_id, 5000) != WAIT_OBJECT_0) {
-		ubprintf("SetLGP: Killing stuck thread!");
-		TerminateThread(thread_id, 0);
-		CloseHandle(thread_id);
-		return FALSE;
-	}
-	if (!GetExitCodeThread(thread_id, &r))
-		return FALSE;
-	return (BOOL) r;
 }
 
 /*

@@ -157,6 +157,22 @@ out:
 	return hSession;
 }
 
+// WinINet silently follows HTTPS to HTTP redirects when INTERNET_FLAG_NO_UI is set (regardless
+// of INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP), so we must check for a downgrade ourselves.
+static BOOL IsDowngradedRequest(HINTERNET hRequest, INTERNET_SCHEME nScheme)
+{
+	char url[INTERNET_MAX_URL_LENGTH];
+	DWORD dwSize = sizeof(url);
+
+	if (nScheme != INTERNET_SCHEME_HTTPS)
+		return FALSE;
+	if (InternetQueryOptionA(hRequest, INTERNET_OPTION_URL, url, &dwSize) && (_strnicmp(url, "https://", 8) == 0))
+		return FALSE;
+	uprintf("Refusing to follow a redirect from HTTPS to a non HTTPS URL");
+	SetLastError(ERROR_INTERNET_HTTPS_TO_HTTP_ON_REDIR);
+	return TRUE;
+}
+
 /*
  * Download a file or fill a buffer from an URL
  * Mostly taken from http://support.microsoft.com/kb/234913
@@ -173,7 +189,7 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 	const char* accept_types[] = {"*/*\0", NULL};
 	const char* short_name;
 	unsigned char buf[DOWNLOAD_BUFFER_SIZE];
-	char hostname[64], urlpath[128], strsize[32];
+	char hostname[64], urlpath[128], strsize[32], *bak_file = NULL;
 	BOOL r = FALSE;
 	DWORD dwSize, dwWritten, dwDownloaded;
 	HANDLE hFile = INVALID_HANDLE_VALUE;
@@ -198,6 +214,13 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 		uprintf("Downloading %s", url);
 	}
 
+	// If an old file with the same name exists, rename it so we can restore it in case of failure
+	if (file != NULL && PathFileExistsU((char*)file) && (bak_file = calloc(1, strlen(file) + 6)) != NULL) {
+		strcpy(bak_file, file);
+		strcat(bak_file, ".bak");
+		MoveFileU(file, bak_file);
+	}
+
 	if ( (!InternetCrackUrlA(url, (DWORD)safe_strlen(url), 0, &UrlParts))
 	  || (UrlParts.lpszHostName == NULL) || (UrlParts.lpszUrlPath == NULL)) {
 		uprintf("Unable to decode URL: %s", WindowsErrorString());
@@ -218,7 +241,7 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 	}
 
 	hRequest = HttpOpenRequestA(hConnection, "GET", UrlParts.lpszUrlPath, NULL, NULL, accept_types,
-		INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP | INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
+		INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
 		INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_HYPERLINK |
 		((UrlParts.nScheme == INTERNET_SCHEME_HTTPS) ? INTERNET_FLAG_SECURE : 0), (DWORD_PTR)NULL);
 	if (hRequest == NULL) {
@@ -236,6 +259,8 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 	// This is needed for GitHub as the Microsoft HTTP APIs can't seem to read content-length for
 	// compressed content from GitHub, and using "identity" disables compression.
 	HttpSendRequestA(hRequest, "Accept-Encoding: identity", -1L, NULL, 0);
+	if (IsDowngradedRequest(hRequest, UrlParts.nScheme))
+		goto out;
 
 	// Get the file size
 	dwSize = sizeof(DownloadStatus);
@@ -273,6 +298,11 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 			uprintf("No buffer pointer provided for download");
 			goto out;
 		}
+		// Don't let a bogus Content-Length wrap the allocation size around
+		if (total_size > SIZE_MAX - 2) {
+			uprintf("Invalid file length for download: %lld bytes", total_size);
+			goto out;
+		}
 		// Allocate one extra byte, so that caller can rely on NUL-terminated text if needed
 		*buffer = calloc((size_t)total_size + 2, 1);
 		if (*buffer == NULL) {
@@ -299,6 +329,13 @@ uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char*
 				goto out;
 			}
 		} else {
+			// WinINet does not enforce Content-Length (e.g. when chunked encoding is also used)
+			// so we must make sure that we don't receive more data than we allocated for.
+			if (dwDownloaded > total_size - size) {
+				uprintf("Received more data than the expected %lld bytes - Aborting", total_size);
+				SetLastError(ERROR_INVALID_DATA);
+				goto out;
+			}
 			memcpy(&(*buffer)[size], buf, dwDownloaded);
 		}
 		size += dwDownloaded;
@@ -327,8 +364,12 @@ out:
 	if (!r) {
 		if (file != NULL)
 			DeleteFileU(file);
+		if (bak_file != NULL)
+			MoveFileU(bak_file, file);
 		if (buffer != NULL)
 			safe_free(*buffer);
+	} else if (bak_file != NULL) {
+		DeleteFileU(bak_file);
 	}
 	if (hRequest)
 		InternetCloseHandle(hRequest);
@@ -342,28 +383,29 @@ out:
 }
 
 // Download and validate a signed file. The file must have a corresponding '.sig' on the server.
-DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError)
+DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError, BOOL bSaveSig)
 {
-	char* url_sig = NULL;
+	char* sig_path = NULL;
 	BYTE *buf = NULL, *sig = NULL;
 	DWORD buf_len = 0, sig_len = 0;
 	DWORD ret = 0;
 	HANDLE hFile = INVALID_HANDLE_VALUE;
 
-	assert(url != NULL);
+	if_assert_fails(url != NULL && file != NULL)
+		goto out;
 
-	url_sig = malloc(strlen(url) + 5);
-	if (url_sig == NULL) {
+	sig_path = malloc(strlen(url) + 5);
+	if (sig_path == NULL) {
 		uprintf("Could not allocate signature URL");
 		goto out;
 	}
-	strcpy(url_sig, url);
-	strcat(url_sig, ".sig");
+	strcpy(sig_path, url);
+	strcat(sig_path, ".sig");
 
 	buf_len = (DWORD)DownloadToFileOrBuffer(url, NULL, &buf, hProgressDialog, FALSE);
 	if (buf_len == 0)
 		goto out;
-	sig_len = (DWORD)DownloadToFileOrBuffer(url_sig, NULL, &sig, NULL, FALSE);
+	sig_len = (DWORD)DownloadToFileOrBuffer(sig_path, NULL, &sig, NULL, FALSE);
 	if ((sig_len != RSA_SIGNATURE_SIZE) || (!ValidateOpensslSignature(buf, buf_len, sig, sig_len))) {
 		uprintf("FATAL: Download signature is invalid ✗");
 		DownloadStatus = 403;	// Forbidden
@@ -374,6 +416,21 @@ DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog
 	}
 
 	uprintf("Download signature is valid ✓");
+
+	// Save the signature if requested
+	if (bSaveSig) {
+		free(sig_path);
+		sig_path = malloc(strlen(file) + 5);
+		if (sig_path == NULL) {
+			uprintf("Could not allocate signature path");
+			goto out;
+		}
+		strcpy(sig_path, file);
+		strcat(sig_path, ".sig");
+		if (write_file(sig_path, sig, sig_len) != sig_len)
+			goto out;
+	}
+
 	DownloadStatus = 206;	// Partial content
 	hFile = CreateFileU(file, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) {
@@ -400,7 +457,7 @@ out:
 		Notification(MB_OK | MB_ICONERROR, lmprintf(MSG_044), IS_ERROR(ErrorStatus) ? StrError(ErrorStatus, FALSE) : WindowsErrorString());
 	}
 	safe_closehandle(hFile);
-	free(url_sig);
+	free(sig_path);
 	free(buf);
 	free(sig);
 	return ret;
@@ -412,21 +469,23 @@ typedef struct {
 	const char* file;
 	HWND hProgressDialog;
 	BOOL bPromptOnError;
+	BOOL bSaveSig;
 } DownloadSignedFileThreadArgs;
 
 static DWORD WINAPI DownloadSignedFileThread(LPVOID param)
 {
 	DownloadSignedFileThreadArgs* args = (DownloadSignedFileThreadArgs*)param;
-	ExitThread(DownloadSignedFile(args->url, args->file, args->hProgressDialog, args->bPromptOnError));
+	ExitThread(DownloadSignedFile(args->url, args->file, args->hProgressDialog, args->bPromptOnError, args->bSaveSig));
 }
 
-HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError)
+HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError, BOOL bSaveSig)
 {
 	static DownloadSignedFileThreadArgs args;
 	args.url = url;
 	args.file = file;
 	args.hProgressDialog = hProgressDialog;
 	args.bPromptOnError = bPromptOnError;
+	args.bSaveSig = bSaveSig;
 	return CreateThread(NULL, 0, DownloadSignedFileThread, &args, 0, NULL);
 }
 
@@ -496,7 +555,10 @@ static void CheckForDBXUpdates(int verbose)
 		vuprintf("DBX update timestamp is %" PRId64, timestamp);
 		static_sprintf(reg_name, "DBXTimestamp_%s", efi_archname[i + 1]);
 		// Check if we have an external DBX that is newer than embedded/last downloaded
-		if (timestamp <= MAX(dbx_info[i].timestamp, (uint64_t)ReadSetting64(reg_name)))
+		if (timestamp <= dbx_info[i].timestamp)
+			continue;
+		static_sprintf(path, "%s\\%s\\dbx_%s.bin", app_data_dir, FILES_DIR, efi_archname[i + 1]);
+		if (PathFileExistsU(path) && timestamp <= (uint64_t)ReadSetting64(reg_name))
 			continue;
 		if (!already_prompted) {
 			r = Notification(MB_YESNO | MB_ICONWARNING, lmprintf(MSG_353), lmprintf(MSG_354));
@@ -507,7 +569,6 @@ static void CheckForDBXUpdates(int verbose)
 			IGNORE_RETVAL(_mkdir(FILES_DIR));
 			IGNORE_RETVAL(_chdir(FILES_DIR));
 		}
-		static_sprintf(path, "%s\\%s\\dbx_%s.bin", app_data_dir, FILES_DIR, efi_archname[i + 1]);
 		if (DownloadToFileOrBuffer(dbx_info[i].url, path, NULL, NULL, FALSE) != 0) {
 			WriteSetting64(reg_name, timestamp);
 			uprintf("Saved %s as 'dbx_%s.bin'", dbx_info[i].url, efi_archname[i + 1]);
@@ -1036,7 +1097,7 @@ BOOL IsDownloadable(const char* url)
 		goto out;
 
 	hRequest = HttpOpenRequestA(hConnection, "GET", UrlParts.lpszUrlPath, NULL, NULL, accept_types,
-		INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTP | INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
+		INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS |
 		INTERNET_FLAG_NO_COOKIES | INTERNET_FLAG_NO_UI | INTERNET_FLAG_NO_CACHE_WRITE | INTERNET_FLAG_HYPERLINK |
 		((UrlParts.nScheme == INTERNET_SCHEME_HTTPS) ? INTERNET_FLAG_SECURE : 0), (DWORD_PTR)NULL);
 	if (hRequest == NULL)
@@ -1044,6 +1105,8 @@ BOOL IsDownloadable(const char* url)
 
 	// Must use "Accept-Encoding: identity" to get the file size
 	HttpSendRequestA(hRequest, "Accept-Encoding: identity", -1L, NULL, 0);
+	if (IsDowngradedRequest(hRequest, UrlParts.nScheme))
+		goto out;
 
 	// Get the file size
 	dwSize = sizeof(DownloadStatus);

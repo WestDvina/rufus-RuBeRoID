@@ -7,11 +7,11 @@ struct {
 	char* url;
 	uint64_t timestamp;
 } dbx_info[] = {
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/x86/DBXUpdate.bin", 1760555920 },
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/amd64/DBXUpdate.bin", 1760555920 },
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/arm/DBXUpdate.bin", 1740428422 },
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/arm64/DBXUpdate.bin", 1740428422 },
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/ia64/DBXUpdate.bin", 0 },
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/riscv64/DBXUpdate.bin", 0 },
-	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/DBX/loongarch64/DBXUpdate.bin", 0 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_ia32.efiauth2", 1788300339 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_x64.efiauth2", 1788300339 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_arm.efiauth2", 1788300339 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_aarch64.efiauth2", 1788300339 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_ia64.efiauth2", 0 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_riscv64.efiauth2", 0 },
+	{ "https://api.github.com/repos/microsoft/secureboot_objects/contents/PostSignedObjects/SignedByKEK2023/dbx_loongarch64.efiauth2", 0 },
 };

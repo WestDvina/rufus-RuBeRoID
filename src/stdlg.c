@@ -862,7 +862,6 @@ static INT_PTR CALLBACK SelectionCallback(HWND hDlg, UINT message, WPARAM wParam
 {
 	// This "Mooo" is designed to give us enough space for a regular username length
 	static const char* base_username = "MOOOOOOOOOOO";	// 🐮
-	static const char* username_invalid_chars = USERNAME_INVALID_CHARS;
 	// Prevent resizing
 	static const LRESULT disabled[9] = { HTLEFT, HTRIGHT, HTTOP, HTBOTTOM, HTSIZE,
 		HTTOPLEFT, HTTOPRIGHT, HTBOTTOMLEFT, HTBOTTOMRIGHT };
@@ -1080,8 +1079,8 @@ static INT_PTR CALLBACK SelectionCallback(HWND hDlg, UINT message, WPARAM wParam
 		} else switch (LOWORD(wParam)) {
 		case IDOK:
 			// Produce a big scary warning if the silent install option was selected
-			if (selection_data[s].options->edition_index > 0 &&
-				Button_GetCheck(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + selection_data[s].options->edition_index - 1))) {
+			hCtrl = GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + selection_data[s].options->edition_index - 1);
+			if (selection_data[s].options->edition_index > 0 &&	IsWindowVisible(hCtrl) && Button_GetCheck(hCtrl)) {
 				selection_dialog_options_t selection = { 0 };
 				selection.style = BS_AUTOCHECKBOX;
 				selection.flags = SELECTION_NEEDS_ALL_TO_PROCEED | SELECTION_USE_WARNING_ICON;
@@ -1095,18 +1094,11 @@ static INT_PTR CALLBACK SelectionCallback(HWND hDlg, UINT message, WPARAM wParam
 					break;
 			}
 			for (r = 0, i = 0, m = 1; i < nDialogItems; i++, m <<= 1)
-				if (Button_GetCheck(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + i)) == BST_CHECKED)
+				if (Button_GetCheck(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + i)) == BST_CHECKED &&
+					IsWindowVisible(GetDlgItem(hDlg, IDC_SELECTION_CHOICE1 + i)))
 					r += m;
-			if (selection_data[s].options->username_index > 0) {
+			if (selection_data[s].options->username_index > 0)
 				GetWindowTextU(GetDlgItem(hDlg, IDC_SELECTION_USERNAME), unattend_username, MAX_USERNAME_LENGTH);
-				// Perform string sanitization (NB: GetWindowTextU always terminates the string)
-				for (i = 0; unattend_username[i] != 0; i++) {
-					if (strchr(username_invalid_chars, unattend_username[i]) != NULL)
-						unattend_username[i] = '_';
-				}
-				// Also remove leading and trailing whitespaces (https://github.com/pbatard/rufus/issues/2950)
-				trim(unattend_username);
-			}
 			if (selection_data[s].options->edition_index > 0)
 				unattend_edition_index = (int)ComboBox_GetCurItemData(GetDlgItem(hDlg, IDC_SELECTION_EDITION));
 			// Fall through
@@ -2009,7 +2001,7 @@ INT_PTR CALLBACK NewVersionCallback(HWND hDlg, UINT message, WPARAM wParam, LPAR
 				}
 				// Opening the File Dialog will make us lose tabbing focus - set it back
 				SendMessage(hDlg, WM_NEXTDLGCTL, (WPARAM)GetDlgItem(hDlg, IDC_DOWNLOAD), TRUE);
-				hThread = DownloadSignedFileThreaded(update.download_url, filepath, hDlg, TRUE);
+				hThread = DownloadSignedFileThreaded(update.download_url, filepath, hDlg, TRUE, FALSE);
 				break;
 			}
 			return (INT_PTR)TRUE;

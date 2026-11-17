@@ -77,7 +77,7 @@ extern BOOL force_large_fat32, enable_ntfs_compression, lock_drive, zero_drive, 
 extern BOOL write_as_image, use_vds, write_as_esp, is_vds_available, has_ffu_support, use_rufus_mbr, append_silent;
 extern char* archive_path;
 uint8_t *grub2_buf = NULL, *sec_buf = NULL;
-long grub2_len;
+uint32_t grub2_len;
 
 /*
  * Convert the fmifs outputs messages (that use an OEM code page) to UTF-8
@@ -936,7 +936,7 @@ static BOOL WriteSBR(HANDLE hPhysicalDrive)
 			uprintf("Writing Grub 2.0 SBR (from download) %s",
 				IsBufferInDB(grub2_buf, grub2_len)?"✓":"✗");
 			buf = grub2_buf;
-			size = (DWORD)grub2_len;
+			size = grub2_len;
 		} else {
 			uprintf("Writing Grub 2.0 SBR (from embedded)");
 			buf = GetResource(hMainInstance, MAKEINTRESOURCEA(IDR_GR_GRUB2_CORE_IMG), _RT_RCDATA, "core.img", &size, FALSE);
@@ -1444,7 +1444,7 @@ out:
  */
 DWORD WINAPI FormatThread(void* param)
 {
-	int r;
+	int i, r;
 	BOOL ret, windows_to_go, actual_lock_drive = lock_drive, write_as_ext = FALSE;
 	// Windows 11 and VDS (which I suspect is what fmifs.dll's FormatEx() is now calling behind the scenes)
 	// require us to unlock the physical drive to format the drive, else access denied is returned.
@@ -1517,7 +1517,9 @@ DWORD WINAPI FormatThread(void* param)
 	}
 
 	// Unassign all drives letters
-	drive_name[0] = RemoveDriveLetters(DriveIndex, TRUE, FALSE);
+	// For raw images, keep the primary partition on the earliest prior letter
+	// so we don't steal the secondary partition's former mountpoint.
+	drive_name[0] = RemoveDriveLetters(DriveIndex, !((boot_type == BT_IMAGE) && write_as_image), FALSE);
 	if (drive_name[0] == 0) {
 		uprintf("Unable to find a drive letter to use");
 		ErrorStatus = RUFUS_ERROR(APPERR(ERROR_CANT_ASSIGN_LETTER));
@@ -1938,8 +1940,8 @@ try_clear:
 			grub4dos_dst[0] = drive_name[0];
 			IGNORE_RETVAL(_chdirU(app_data_dir));
 			uprintf("Installing: %s (Grub4DOS loader) %s", grub4dos_dst,
-				IsFileInDB(FILES_DIR "\\grub4dos-" GRUB4DOS_VERSION "\\grldr")?"✓":"✗");
-			if (!CopyFileU(FILES_DIR "\\grub4dos-" GRUB4DOS_VERSION "\\grldr", grub4dos_dst, FALSE))
+				IsFileInDB(FILES_DIR "\\grub4dos-" GRUB4DOS_VERSION "\\grldr") ? "✓" : "✗");
+			if (!copy_signed_file(FILES_DIR "\\grub4dos-" GRUB4DOS_VERSION "\\grldr", grub4dos_dst))
 				uprintf("Failed to copy file: %s", WindowsErrorString());
 		} else if ((boot_type == BT_IMAGE) && (image_path != NULL) && (img_report.is_iso || img_report.is_windows_img)) {
 			UpdateProgress(OP_FILE_COPY, 0.0f);
@@ -2042,18 +2044,26 @@ out:
 		PrintInfo(0, MSG_320, lmprintf(MSG_307));
 		Sleep(200);
 		VdsRescan(VDS_RESCAN_REFRESH, 0, TRUE);
-		// Trying to mount accessible partitions after writing an image leads to the
-		// creation of the infamous 'System Volume Information' folder on ESPs, which
-		// in turn leads to checksum errors for Ubuntu's boot/grub/efi.img (that maps
-		// to the Ubuntu ESP). So we only call the code below if there are no ESPs or
-		// if we're running a Ventoy image.
-		if ((GetEspOffset(DriveIndex) == 0) || (img_report.compression_type == BLED_COMPRESSION_VTSI)) {
-			WaitForLogical(DriveIndex, 0);
-			if (GetDrivePartitionData(SelectedDrive.DeviceNumber, fs_name, sizeof(fs_name), TRUE)) {
-				volume_name = GetLogicalName(DriveIndex, 0, TRUE, TRUE);
-				if ((volume_name != NULL) && (MountVolume(drive_name, volume_name)))
-					uprintf("Remounted %s as %c:", volume_name, toupper(drive_name[0]));
+		// Try to remount the first non ESP partition we see with a file system that Windows supports
+		if (GetDrivePartitionData(SelectedDrive.DeviceNumber, fs_name, sizeof(fs_name), TRUE) && 
+			(hPhysicalDrive = GetPhysicalHandle(DriveIndex, FALSE, TRUE, TRUE)) != INVALID_HANDLE_VALUE) {
+			int64_t esp_offset = GetEspOffset(hPhysicalDrive);
+			for (i = 0; i < min(SelectedDrive.nPartitions, MAX_PARTITIONS); i++) {
+				LARGE_INTEGER li = { .QuadPart = SelectedDrive.Partition[i].Offset };
+				if (li.QuadPart == esp_offset)	// Skip any ESP
+					continue;
+				const char* fs = GetFsName(hPhysicalDrive, li);
+				if (fs != NULL && (strcmp(fs, "NTFS") == 0 || strcmp(fs, "exFAT") == 0 ||
+					strcmp(fs, "ReFS") == 0 || strncmp(fs, "FAT", 3) == 0)) {
+					WaitForLogical(DriveIndex, li.QuadPart);
+					volume_name = GetLogicalName(DriveIndex, li.QuadPart, TRUE, TRUE);
+					if ((volume_name != NULL) && (MountVolume(drive_name, volume_name)))
+						uprintf("Remounted %s as %c:", volume_name, toupper(drive_name[0]));
+					free(volume_name);
+					break;
+				}
 			}
+			safe_closehandle(hPhysicalDrive);
 		}
 	}
 	if (IS_ERROR(ErrorStatus)) {

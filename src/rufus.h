@@ -88,6 +88,7 @@
 #define MAX_ISO_TO_ESP_SIZE         (1 * GB)	// Maximum size we allow for the ISO → ESP option
 #define MAX_DEFAULT_LIST_CARD_SIZE  (500 * GB)	// Size above which we don't list a card without enable HDD or Alt-F
 #define MAX_SECTORS_TO_CLEAR        (8 * MB / 512)	// Sectors to zap when clearing the MBR/GPT (must be >34)
+#define MAX_PE_SIZE                 (256 * MB)	// Maximum size of any PE file (UEFI bootloader) we want to process
 #define MAX_USERNAME_LENGTH         128			// Maximum size we'll accept for a WUE specified username
 #define MAX_WININST                 4			// Max number of install[.wim|.esd] we can handle on an image
 #define MAX_MARKER                  80.0f		// Max number of '+' signs we display for progress
@@ -156,9 +157,8 @@
 #define DEFAULT_ESP_MOUNT_POINT     "S:\\"
 // Per https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-shell-setup-useraccounts-localaccounts-localaccount-name
 // and https://learn.microsoft.com/en-us/previous-versions/cc722458(v=technet.10)#user-name-policies
-// Add '.' to the list because some folks also reported an issue with local accounts that have dots.
 // Also add '&', even as it could be escaped, as it's just not worth the trouble...
-#define USERNAME_INVALID_CHARS      "/\\[]:;|=.,+*?<>%@&\""
+#define USERNAME_INVALID_CHARS      "/\\[]:;|=,+*?<>%@&\""
 #define IS_POWER_OF_2(x)            ((x != 0) && (((x) & ((x) - 1)) == 0))
 #define IGNORE_RETVAL(expr)         do { (void)(expr); } while(0)
 #ifndef ARRAYSIZE
@@ -206,11 +206,7 @@ static __inline void safe_strcp(char* dst, const size_t dst_max, const char* src
 #define safe_atoi(str) ((((char*)(str))==NULL) ? 0 : atoi(str))
 #define safe_strlen(str) ((((char*)(str))==NULL) ? 0 : strlen(str))
 #define safe_strdup(str) ((((char*)(str))==NULL) ? NULL : _strdup(str))
-#if defined(_MSC_VER)
 #define safe_vsnprintf(buf, size, format, arg) _vsnprintf_s(buf, size, _TRUNCATE, format, arg)
-#else
-#define safe_vsnprintf vsnprintf
-#endif
 #define safe_strtolower(str) do { if (str != NULL) CharLowerA(str); } while(0)
 #define safe_strtoupper(str) do { if (str != NULL) CharUpperA(str); } while(0)
 static __inline void static_repchr(char* p, char s, char r) {
@@ -719,12 +715,12 @@ typedef struct {
 #define LIST_DIR_TYPE_RECURSIVE		0x80
 
 /* Hash tables */
-typedef struct htab_entry {
+typedef struct {
 	uint32_t used;
 	char* str;
 	void* data;
 } htab_entry;
-typedef struct htab_table {
+typedef struct {
 	htab_entry* table;
 	uint32_t size;
 	uint32_t filled;
@@ -788,7 +784,6 @@ extern windows_version_t WindowsVersion;
 extern sbat_entry_t* sbat_entries;
 extern thumbprint_list_t *sb_active_certs, *sb_revoked_certs;
 extern int dialog_showing, force_update, fs_type, boot_type, partition_type, target_type;
-extern unsigned long syslinux_ldlinux_len[2];
 extern char ubuffer[UBUFFER_SIZE], embedded_sl_version_str[2][12];
 extern char szFolderPath[MAX_PATH], app_dir[MAX_PATH], temp_dir[MAX_PATH], system_dir[MAX_PATH];
 extern char sysnative_dir[MAX_PATH], app_data_dir[MAX_PATH], *image_path, *fido_url;
@@ -862,14 +857,14 @@ extern DWORD RunCommandWithProgress(const char* cmdline, const char* dir, BOOL l
 extern BOOL CompareGUID(const GUID *guid1, const GUID *guid2);
 extern BOOL MountRegistryHive(const HKEY key, const char* pszHiveName, const char* pszHivePath);
 extern BOOL UnmountRegistryHive(const HKEY key, const char* pszHiveName);
-extern BOOL SetLGP(BOOL bRestore, BOOL* bExistingKey, const char* szPath, const char* szPolicy, DWORD dwValue);
+extern BOOL SetNDTA(BOOL bRestore, BOOL* bExistingKey, DWORD dwValue);
 extern LONG GetEntryWidth(HWND hDropDown, const char* entry);
 extern uint64_t DownloadToFileOrBufferEx(const char* url, const char* file, const char* user_agent,
 	BYTE** buffer, HWND hProgressDialog, BOOL bTaskBarProgress);
 #define DownloadToFileOrBuffer(url, file, buffer, hProgressDialog, bTaskBarProgress) \
 	DownloadToFileOrBufferEx(url, file, NULL, buffer, hProgressDialog, bTaskBarProgress)
-extern DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL PromptOnError);
-extern HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError);
+extern DWORD DownloadSignedFile(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError, BOOL bSaveSig);
+extern HANDLE DownloadSignedFileThreaded(const char* url, const char* file, HWND hProgressDialog, BOOL bPromptOnError, BOOL bSaveSig);
 extern INT_PTR CALLBACK UpdateCallback(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 extern void SetFidoCheck(void);
 extern BOOL SetUpdateCheck(void);
@@ -879,7 +874,9 @@ extern BOOL DownloadISO(void);
 extern BOOL IsDownloadable(const char* url);
 extern BOOL IsShown(HWND hDlg);
 extern uint32_t read_file(const char* path, uint8_t** buf);
+extern uint32_t read_signed_file(const char* path, uint8_t** buf);
 extern uint32_t write_file(const char* path, const uint8_t* buf, const uint32_t size);
+extern BOOL copy_signed_file(const char* src, const char* dst);
 extern char* get_token_data_file_indexed(const char* token, const char* filename, int index);
 #define get_token_data_file(token, filename) get_token_data_file_indexed(token, filename, 1)
 extern char* set_token_data_file(const char* token, const char* data, const char* filename);
@@ -937,14 +934,14 @@ extern DWORD WaitForSingleObjectWithMessages(HANDLE hHandle, DWORD dwMillisecond
 extern HICON CreateMirroredIcon(HICON hiconOrg);
 extern HANDLE CreatePreallocatedFile(const char* lpFileName, DWORD dwDesiredAccess,
 	DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition,
-	DWORD dwFlagsAndAttributes, LONGLONG fileSize);
+	DWORD dwFlagsAndAttributes, LONGLONG llFileSize);
 extern uint32_t ResolveDllAddress(dll_resolver_t* resolver);
 extern sbat_entry_t* GetSbatEntries(char* sbatlevel);
 extern thumbprint_list_t* GetThumbprintEntries(char* thumbprints_txt);
-extern uint16_t GetPeArch(uint8_t* buf);
-extern uint8_t* GetPeSection(uint8_t* buf, const char* name, uint32_t* len);
-extern uint8_t* GetPeSignatureData(uint8_t* buf);
-extern uint8_t* RvaToPhysical(uint8_t* buf, uint32_t rva);
+extern uint16_t GetPeArch(uint8_t* buf, uint32_t buf_len);
+extern uint8_t* GetPeSection(uint8_t* buf, uint32_t buf_len, const char* name, uint32_t* len);
+extern uint8_t* GetPeSignatureData(uint8_t* buf, uint32_t buf_len);
+extern uint8_t* RvaToPhysical(uint8_t* buf, uint32_t buf_len, uint32_t rva);
 extern uint32_t FindResourceRva(const wchar_t* name, uint8_t* root, uint8_t* dir, uint32_t* len);
 extern DWORD ListDirectoryContent(StrArray* arr, char* dir, uint8_t type);
 extern BOOL TakeOwnership(LPCSTR lpszOwnFile);
